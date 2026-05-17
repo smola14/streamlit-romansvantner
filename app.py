@@ -818,7 +818,7 @@ def build_non_normative_fv_pdf(
 
     pdf.image(fv_buf, x=20, y=55, w=140)
     if player_photo_bytes:
-        pdf.image(io.BytesIO(player_photo_bytes), x=205, y=45, w=45, h=45, keep_aspect_ratio=True)
+        pdf.image(io.BytesIO(player_photo_bytes), x=194, y=18, w=45, h=45, keep_aspect_ratio=True)
 
     data_x = 170
     data_y = 70
@@ -964,7 +964,7 @@ def build_normative_fv_pdf(
 
     pdf.image(fv_buf, x=20, y=55, w=125)
     if player_photo_bytes:
-        pdf.image(io.BytesIO(player_photo_bytes), x=205, y=45, w=45, h=45, keep_aspect_ratio=True)
+        pdf.image(io.BytesIO(player_photo_bytes), x=194, y=18, w=45, h=45, keep_aspect_ratio=True)
 
     f0 = float(report["f0"])
     v0 = float(report["v0"])
