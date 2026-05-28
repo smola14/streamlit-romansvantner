@@ -2046,6 +2046,15 @@ def render_session_detail_content(
                 st.error(error)
             else:
                 payload = st.session_state["exercise_report_cache"].get(cache_key)
+                if (
+                    payload
+                    and not (payload.get("reports") or [])
+                    and "_debug_fetches" not in payload
+                    and api_key
+                ):
+                    with st.spinner("Refreshing split debug data..."):
+                        load_exercise_report(api_key, str(exercise.get("id") or ""), "split", exercise)
+                    payload = st.session_state["exercise_report_cache"].get(cache_key)
                 if payload:
                     render_split_profile(exercise, payload)
     else:
