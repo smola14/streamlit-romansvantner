@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import hashlib
+import base64
 import io
 import json
 import os
@@ -21,6 +22,7 @@ from fpdf import FPDF
 
 API_BASE_URL = os.getenv("API1080_BASE_URL", "https://publicapi.1080motion.com").rstrip("/")
 APP_API_KEY = st.secrets.get("api_1080_key", os.getenv("API1080_KEY", "")).strip()
+AUTH_SESSION_SECRET = st.secrets.get("auth_session_secret", os.getenv("AUTH_SESSION_SECRET", "")).strip()
 API_TIMEOUT_SECONDS = 20
 BLUE_RGB = (48, 54, 116)
 BLACK_RGB = (37, 36, 35)
@@ -35,6 +37,8 @@ UPLOADED_LOGOS_DIR = Path(__file__).resolve().parent / "uploaded_logos"
 UPLOADED_PLAYER_PHOTOS_DIR = Path(__file__).resolve().parent / "uploaded_player_photos"
 MAX_LOGO_BYTES = 2 * 1024 * 1024
 MAX_PLAYER_PHOTO_BYTES = 5 * 1024 * 1024
+AUTH_SESSION_DURATION = timedelta(days=1)
+AUTH_STORAGE_KEY = "1080_auth_session"
 
 
 PDF_TEXT = {
@@ -162,10 +166,14 @@ CLIENT_STORAGE_COMPONENT = st.components.v2.component(
       const syncedKey = `${storageKey}:last_synced`;
       const currentCommandId = data?.commandId ?? "";
       const command = data?.command ?? "read";
+      const authStorageKey = data?.authStorageKey ?? "1080_auth_session";
+      const authCommand = data?.authCommand ?? "read";
+      const authCommandId = data?.authCommandId ?? "";
 
       const emitState = () => {
         setStateValue("clients_json", localStorage.getItem(storageKey) ?? "");
         setStateValue("last_synced", localStorage.getItem(syncedKey) ?? "");
+        setStateValue("auth_session_token", localStorage.getItem(authStorageKey) ?? "");
       };
 
       const commandMarkerKey = `__last_command__:${storageKey}`;
@@ -183,10 +191,85 @@ CLIENT_STORAGE_COMPONENT = st.components.v2.component(
         window[commandMarkerKey] = currentCommandId;
       }
 
+      const authCommandMarkerKey = `__last_auth_command__:${authStorageKey}`;
+      const lastAuthCommandId = window[authCommandMarkerKey];
+
+      if (authCommandId && authCommandId !== lastAuthCommandId) {
+        if (authCommand === "write") {
+          localStorage.setItem(authStorageKey, data?.authSessionToken ?? "");
+        } else if (authCommand === "clear") {
+          localStorage.removeItem(authStorageKey);
+        }
+
+        window[authCommandMarkerKey] = authCommandId;
+      }
+
       emitState();
     }
     """,
 )
+
+
+def auth_session_signature(payload: str) -> str:
+    if not AUTH_SESSION_SECRET:
+        return ""
+    return hmac.new(
+        AUTH_SESSION_SECRET.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def create_auth_session_token(email: str) -> str:
+    expires_at = int((datetime.now(timezone.utc) + AUTH_SESSION_DURATION).timestamp())
+    payload = json.dumps({"email": email, "exp": expires_at}, separators=(",", ":"))
+    payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+    signature = auth_session_signature(payload_b64)
+    return f"{payload_b64}.{signature}"
+
+
+def parse_auth_session_token(token: str) -> str | None:
+    if not token or not AUTH_SESSION_SECRET or "." not in token:
+        return None
+
+    payload_b64, provided_signature = token.rsplit(".", 1)
+    expected_signature = auth_session_signature(payload_b64)
+    if not expected_signature or not hmac.compare_digest(expected_signature, provided_signature):
+        return None
+
+    try:
+        payload_json = base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8")
+        payload = json.loads(payload_json)
+        email = str(payload["email"]).strip().lower()
+        expires_at = int(payload["exp"])
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+    if not email or datetime.now(timezone.utc).timestamp() > expires_at:
+        return None
+
+    return email
+
+
+def queue_auth_storage_command(command: str, token: str = "") -> None:
+    st.session_state["auth_storage_command"] = command
+    st.session_state["auth_storage_command_id"] = f"{command}:{iso_now()}"
+    st.session_state["auth_session_token"] = token
+
+
+def restore_auth_session_from_token(token: str) -> bool:
+    auth_users = get_auth_users()
+    email = parse_auth_session_token(token)
+    if not email or email not in auth_users or not APP_API_KEY:
+        return False
+
+    st.session_state["auth_verified"] = True
+    st.session_state["auth_user_email"] = email
+    st.session_state["api_key"] = APP_API_KEY
+    st.session_state["api_valid"] = True
+    st.session_state["client_storage_autoload_complete"] = False
+    st.session_state["auth_storage_autoload_complete"] = True
+    return True
 
 
 def render_app_styles() -> None:
@@ -648,11 +731,50 @@ def format_sync_label(value: str) -> str:
     return timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def handle_auth_storage_bridge() -> None:
+    storage_result = CLIENT_STORAGE_COMPONENT(
+        data={
+            "storageKey": "1080_auth_bridge_clients",
+            "command": "read",
+            "commandId": "",
+            "clientsJson": "",
+            "lastSynced": "",
+            "authStorageKey": AUTH_STORAGE_KEY,
+            "authCommand": st.session_state["auth_storage_command"],
+            "authCommandId": st.session_state["auth_storage_command_id"],
+            "authSessionToken": st.session_state["auth_session_token"],
+        },
+        default={"clients_json": "", "last_synced": "", "auth_session_token": ""},
+        on_clients_json_change=lambda: None,
+        on_last_synced_change=lambda: None,
+        on_auth_session_token_change=lambda: None,
+        key="auth_storage_bridge",
+        height=0,
+    )
+
+    auth_token = getattr(storage_result, "auth_session_token", "") or ""
+
+    if (
+        not st.session_state["auth_verified"]
+        and not st.session_state["auth_storage_autoload_complete"]
+    ):
+        if auth_token and restore_auth_session_from_token(auth_token):
+            st.rerun()
+
+        st.session_state["auth_storage_autoload_complete"] = True
+        if auth_token:
+            queue_auth_storage_command("clear")
+
+
 def ensure_session_defaults() -> None:
     st.session_state.setdefault("auth_verified", False)
     st.session_state.setdefault("auth_user_email", "")
     st.session_state.setdefault("api_key", "")
     st.session_state.setdefault("api_valid", False)
+    st.session_state.setdefault("auth_storage_command", "read")
+    st.session_state.setdefault("auth_storage_command_id", "")
+    st.session_state.setdefault("auth_session_token", "")
+    st.session_state.setdefault("auth_storage_autoload_complete", False)
     st.session_state.setdefault("clients_cache", [])
     st.session_state.setdefault("clients_last_synced", "")
     st.session_state.setdefault("client_storage_command", "read")
@@ -710,6 +832,8 @@ def logout() -> None:
     st.session_state["auth_user_email"] = ""
     st.session_state["api_key"] = ""
     st.session_state["api_valid"] = False
+    st.session_state["auth_storage_autoload_complete"] = True
+    queue_auth_storage_command("clear")
     reset_client_cache_state()
 
 
@@ -776,7 +900,10 @@ def render_login() -> None:
                 st.session_state["auth_user_email"] = email
                 st.session_state["api_key"] = APP_API_KEY
                 st.session_state["api_valid"] = True
+                if AUTH_SESSION_SECRET:
+                    queue_auth_storage_command("write", create_auth_session_token(email))
                 st.session_state["client_storage_autoload_complete"] = False
+                st.session_state["auth_storage_autoload_complete"] = True
                 st.rerun()
 
             st.session_state["api_valid"] = False
@@ -1975,6 +2102,7 @@ def main() -> None:
 
     render_app_styles()
     ensure_session_defaults()
+    handle_auth_storage_bridge()
 
     if st.session_state["auth_verified"] and st.session_state["api_valid"]:
         render_dashboard()
