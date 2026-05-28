@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import hashlib
 import io
 import json
@@ -18,7 +19,7 @@ from fpdf import FPDF
 
 
 API_BASE_URL = os.getenv("API1080_BASE_URL", "https://publicapi.1080motion.com").rstrip("/")
-APP_PIN = st.secrets.get("app_pin", os.getenv("APP_PIN", "")).strip()
+APP_API_KEY = st.secrets.get("api_1080_key", os.getenv("API1080_KEY", "")).strip()
 API_TIMEOUT_SECONDS = 20
 BLUE_RGB = (48, 54, 116)
 BLACK_RGB = (37, 36, 35)
@@ -569,7 +570,8 @@ def format_sync_label(value: str) -> str:
 
 
 def ensure_session_defaults() -> None:
-    st.session_state.setdefault("pin_verified", False)
+    st.session_state.setdefault("auth_verified", False)
+    st.session_state.setdefault("auth_user_email", "")
     st.session_state.setdefault("api_key", "")
     st.session_state.setdefault("api_valid", False)
     st.session_state.setdefault("clients_cache", [])
@@ -625,34 +627,74 @@ def reset_client_cache_state() -> None:
 
 
 def logout() -> None:
+    st.session_state["auth_verified"] = False
+    st.session_state["auth_user_email"] = ""
     st.session_state["api_key"] = ""
     st.session_state["api_valid"] = False
     reset_client_cache_state()
 
 
-def verify_pin() -> None:
-    st.session_state["pin_verified"] = False
+def get_auth_users() -> dict[str, str]:
+    users = st.secrets.get("auth_users", {})
+    return dict(users) if isinstance(users, dict) else {}
 
 
-def render_pin_gate() -> None:
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations_str, salt, expected_hex = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_str)
+    except (ValueError, TypeError):
+        return False
+
+    derived = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations,
+    ).hex()
+    return hmac.compare_digest(derived, expected_hex)
+
+
+def render_login() -> None:
     _, center_col, _ = st.columns([1.2, 1, 1.2])
     with center_col:
         st.title("1080 Reports")
-        st.write("Enter the app PIN to continue.")
+        st.write("Sign in with your email and password to access reporting tools.")
 
-        if not APP_PIN:
-            st.error("App PIN is not configured. Set `app_pin` in Streamlit secrets or `APP_PIN` as an environment variable.")
+        auth_users = get_auth_users()
+        if not auth_users:
+            st.error("No app users are configured. Add `auth_users` to Streamlit secrets.")
+            return
+        if not APP_API_KEY:
+            st.error("1080 API key is not configured. Set `api_1080_key` in Streamlit secrets or `API1080_KEY` as an environment variable.")
             return
 
-        with st.form("pin-gate-form"):
-            entered_pin = st.text_input("App PIN", type="password")
-            submitted = st.form_submit_button("Continue", use_container_width=True)
+        with st.form("auth-login-form"):
+            email = st.text_input("Email").strip().lower()
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in", use_container_width=True)
 
         if submitted:
-            if entered_pin.strip() == APP_PIN:
-                st.session_state["pin_verified"] = True
+            stored_hash = auth_users.get(email)
+            if not stored_hash or not verify_password(password, str(stored_hash)):
+                st.error("Incorrect email or password.")
+                return
+
+            with st.spinner("Validating 1080 API access..."):
+                is_valid, message = validate_api_key(APP_API_KEY)
+
+            if is_valid:
+                st.session_state["auth_verified"] = True
+                st.session_state["auth_user_email"] = email
+                st.session_state["api_key"] = APP_API_KEY
+                st.session_state["api_valid"] = True
+                st.session_state["client_storage_autoload_complete"] = False
                 st.rerun()
-            st.error("Incorrect PIN.")
+
+            st.session_state["api_valid"] = False
+            st.error(message)
 
 
 def load_clients_from_api(api_key: str) -> bool:
@@ -1515,39 +1557,10 @@ def render_client_detail(client: dict[str, Any]) -> None:
     else:
         st.info("No sessions found for the selected range.")
 
-
-def render_login() -> None:
-    _, center_col, _ = st.columns([1.2, 1, 1.2])
-    with center_col:
-        st.title("1080 Reports")
-        st.write("Sign in with your 1080 API key to access reporting tools.")
-
-        with st.form("api-login-form"):
-            api_key = st.text_input("1080 API key", type="password")
-            submitted = st.form_submit_button("Validate API key", use_container_width=True)
-
-        if submitted:
-            if not api_key.strip():
-                st.error("Enter an API key.")
-                return
-
-            with st.spinner("Validating API key against the 1080 API..."):
-                is_valid, message = validate_api_key(api_key.strip())
-
-            if is_valid:
-                st.session_state["api_key"] = api_key.strip()
-                st.session_state["api_valid"] = True
-                st.session_state["client_storage_autoload_complete"] = False
-                st.success(message)
-                st.rerun()
-
-            st.session_state["api_valid"] = False
-            st.error(message)
-
-
 def render_dashboard() -> None:
     api_key = st.session_state["api_key"]
     storage_key = storage_namespace(api_key)
+    auth_user_email = st.session_state.get("auth_user_email", "")
 
     storage_result = CLIENT_STORAGE_COMPONENT(
         data={
@@ -1596,6 +1609,8 @@ def render_dashboard() -> None:
 
     st.title("1080 Reports")
     st.success("Signed in successfully via the 1080 API.")
+    if auth_user_email:
+        st.caption(f"Signed in as {auth_user_email}")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Status", "Connected")
@@ -1753,11 +1768,7 @@ def main() -> None:
 
     ensure_session_defaults()
 
-    if not st.session_state["pin_verified"]:
-        render_pin_gate()
-        return
-
-    if st.session_state["api_valid"]:
+    if st.session_state["auth_verified"] and st.session_state["api_valid"]:
         render_dashboard()
     else:
         render_login()
