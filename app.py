@@ -671,16 +671,43 @@ def build_split_collection_from_reports(
     }
 
 
+def append_split_debug(
+    debug_steps: list[dict[str, Any]],
+    step: str,
+    *,
+    source_id: str = "",
+    payload: Any = None,
+    error: str | None = None,
+) -> None:
+    debug_steps.append(
+        {
+            "step": step,
+            "sourceId": source_id,
+            "error": error,
+            "payload": payload,
+        }
+    )
+
+
 def load_split_payload_for_exercise(
     api_key: str,
     exercise_id: str,
     exercise: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    debug_steps: list[dict[str, Any]] = []
     exercise_payload, error = fetch_split_exercise(api_key, exercise_id)
+    append_split_debug(
+        debug_steps,
+        "Split/Exercise",
+        source_id=exercise_id,
+        payload=exercise_payload,
+        error=error,
+    )
     if error:
         return None, error
 
     if (exercise_payload.get("reports") or []):
+        exercise_payload["_debug_fetches"] = debug_steps
         return exercise_payload, None
 
     set_payloads: list[dict[str, Any]] = []
@@ -690,6 +717,13 @@ def load_split_payload_for_exercise(
         if not set_id:
             continue
         set_training_payload, set_training_error = fetch_training_data_set(api_key, set_id)
+        append_split_debug(
+            debug_steps,
+            "TrainingData/Set",
+            source_id=set_id,
+            payload=set_training_payload,
+            error=set_training_error,
+        )
         if set_training_error:
             set_errors.append(set_training_error)
             continue
@@ -702,6 +736,13 @@ def load_split_payload_for_exercise(
         ]
         if run_ids:
             run_reports, run_error = fetch_split_runs(api_key, run_ids)
+            append_split_debug(
+                debug_steps,
+                "Split/Runs",
+                source_id=set_id,
+                payload={"runIds": run_ids, "reports": run_reports},
+                error=run_error,
+            )
             if run_error:
                 set_errors.append(run_error)
                 continue
@@ -712,6 +753,13 @@ def load_split_payload_for_exercise(
                 continue
 
         set_payload, set_error = fetch_split_set(api_key, set_id)
+        append_split_debug(
+            debug_steps,
+            "Split/Set",
+            source_id=set_id,
+            payload=set_payload,
+            error=set_error,
+        )
         if set_error:
             set_errors.append(set_error)
             continue
@@ -719,12 +767,15 @@ def load_split_payload_for_exercise(
             set_payloads.append(set_payload)
 
     merged_payload = merge_split_payloads(set_payloads)
+    merged_payload["_debug_fetches"] = debug_steps
     if merged_payload.get("reports"):
         return merged_payload, None
 
     if set_errors:
+        exercise_payload["_debug_fetches"] = debug_steps
         return exercise_payload, set_errors[0]
 
+    exercise_payload["_debug_fetches"] = debug_steps
     return exercise_payload, None
 
 
@@ -1901,6 +1952,7 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
 
 def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> None:
     reports = payload.get("reports") or []
+    debug_fetches = payload.get("_debug_fetches") or []
 
     st.markdown("### 15-0-5 split profile")
 
@@ -1928,6 +1980,12 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
         st.dataframe(split_rows, use_container_width=True, hide_index=True)
     else:
         st.info("No split rows were returned for this exercise.")
+
+    if debug_fetches:
+        st.markdown("#### Split debug")
+        st.json(debug_fetches)
+    st.markdown("#### Split payload")
+    st.json(payload)
 
 
 def render_session_detail_content(
