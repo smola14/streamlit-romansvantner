@@ -993,12 +993,6 @@ def build_normative_fv_pdf(
         pdf.text(170, y_coordinate, "* " + item)
         y_coordinate += 8
 
-    notes = norm_row.get("notes")
-    if notes:
-        pdf.set_xy(170, min(y_coordinate + 4, 190))
-        pdf.set_font(font_family, "", 9)
-        pdf.multi_cell(105, 5, f"{texts['notes']}: {notes}")
-
     return bytes(pdf.output(dest="S"))
 
 
@@ -1018,6 +1012,146 @@ def load_exercise_report(api_key: str, exercise_id: str, report_type: str) -> bo
     st.session_state["exercise_report_cache"][cache_key] = payload
     st.session_state["exercise_report_errors"].pop(cache_key, None)
     return True
+
+
+@st.dialog("FV PDF export")
+def render_fv_export_dialog(
+    exercise: dict[str, Any],
+    reports: list[dict[str, Any]],
+    runner_info: dict[str, Any] | None,
+    client: dict[str, Any],
+) -> None:
+    run_options = {
+        f"{report.get('motionGroupId')} | F0 {format_decimal(report.get('f0'))} | V0 {format_decimal(report.get('v0'))}": report
+        for report in reports
+    }
+
+    selected_run_label = st.selectbox(
+        "Select run for PDF export",
+        options=list(run_options.keys()),
+        key=f"fv_run_select_{exercise.get('id')}",
+    )
+    selected_report = run_options[selected_run_label]
+
+    export_col1, export_col2 = st.columns([1, 1])
+    export_mode = export_col1.radio(
+        "PDF mode",
+        options=["Non-normative", "Normative"],
+        horizontal=True,
+        key=f"fv_export_mode_{exercise.get('id')}",
+    )
+    export_language = st.selectbox(
+        "PDF language",
+        options=["English", "Slovak"],
+        key=f"fv_export_language_{exercise.get('id')}",
+    )
+    logo_bytes = render_logo_library_selector(f"fv_logo_{exercise.get('id')}")
+
+    selected_runner = selected_report.get("runnerInfo") or runner_info or {}
+    export_name = (
+        format_optional_value(selected_runner.get("displayName"))
+        if format_optional_value(selected_runner.get("displayName")) != "-"
+        else format_optional_value(client.get("displayName"))
+    )
+    player_client_id = str(
+        selected_runner.get("clientId")
+        or client.get("id")
+        or ""
+    )
+
+    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+    metric_col1.metric("Selected F0", format_decimal(selected_report.get("f0")))
+    metric_col2.metric("Selected V0", format_decimal(selected_report.get("v0")))
+    metric_col3.metric("Selected PMax", format_decimal(selected_report.get("pMax")))
+    metric_col4.metric("Selected Confidence", format_decimal(selected_report.get("confidence"), 3))
+
+    player_photo_bytes = render_player_photo_selector(
+        f"fv_player_photo_{exercise.get('id')}",
+        player_client_id,
+    ) if player_client_id else None
+
+    if export_mode == "Normative":
+        norms, norms_error = load_fv_norms()
+        if norms_error:
+            st.error(norms_error)
+            return
+
+        norm_options = {str(item.get("category")): item for item in norms}
+        selected_norm_category = st.selectbox(
+            "Select quadrant reference category",
+            options=list(norm_options.keys()),
+            key=f"fv_norm_category_{exercise.get('id')}",
+        )
+        selected_norm = norm_options[selected_norm_category]
+
+        reference_col1, reference_col2, reference_col3 = st.columns(3)
+        reference_col1.metric(
+            "Reference F0 median",
+            format_decimal(selected_norm.get("f0_median")),
+        )
+        reference_col2.metric(
+            "Reference V0 median",
+            format_decimal(selected_norm.get("v0_median")),
+        )
+        reference_col3.metric(
+            "Reference sample",
+            format_optional_value(selected_norm.get("used_n") or selected_norm.get("raw_n")),
+        )
+        quadrant = get_norm_quadrant(selected_report, selected_norm)
+        st.write(f"**Quadrant result:** {get_quadrant_result(quadrant, export_language)}")
+        st.write("**Recommendation:**")
+        for item in get_quadrant_recommendations(quadrant, export_language):
+            st.write(f"- {item}")
+
+        missing_values = [
+            key
+            for key in ("f0_median", "v0_median")
+            if selected_norm.get(key) in (None, "")
+        ]
+        if missing_values:
+            st.warning(
+                "Selected norm category is missing values in the workbook: "
+                + ", ".join(missing_values)
+            )
+            return
+
+        pdf_bytes = build_normative_fv_pdf(
+            selected_report,
+            export_name,
+            logo_bytes,
+            player_photo_bytes,
+            selected_norm,
+            export_language,
+        )
+        file_name = (
+            f"{safe_filename(export_name)}_{safe_filename(selected_norm_category)}_"
+            f"{safe_filename(str(exercise.get('id')))}_fv_normative.pdf"
+        )
+        st.download_button(
+            "Download normative FV PDF",
+            data=pdf_bytes,
+            file_name=file_name,
+            mime="application/pdf",
+            key=f"fv_pdf_normative_{exercise.get('id')}",
+            use_container_width=True,
+        )
+    else:
+        pdf_bytes = build_non_normative_fv_pdf(
+            selected_report,
+            export_name,
+            logo_bytes,
+            player_photo_bytes,
+            export_language,
+        )
+        file_name = f"{safe_filename(export_name)}_{safe_filename(str(exercise.get('id')))}_fv_profile.pdf"
+        st.download_button(
+            "Download FV PDF",
+            data=pdf_bytes,
+            file_name=file_name,
+            mime="application/pdf",
+            key=f"fv_pdf_download_{exercise.get('id')}",
+            use_container_width=True,
+        )
 
 
 def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client: dict[str, Any]) -> None:
@@ -1048,136 +1182,9 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
             for report in reports
         ]
         st.dataframe(summary_rows, use_container_width=True, hide_index=True)
-
-        run_options = {
-            f"{report.get('motionGroupId')} | F0 {format_decimal(report.get('f0'))} | V0 {format_decimal(report.get('v0'))}": report
-            for report in reports
-        }
-
-        selected_run_label = st.selectbox(
-            "Select run for PDF export",
-            options=list(run_options.keys()),
-            key=f"fv_run_select_{exercise.get('id')}",
-        )
-        selected_report = run_options[selected_run_label]
-
-        export_col1, export_col2 = st.columns([1, 1])
-        export_mode = export_col1.radio(
-            "PDF mode",
-            options=["Non-normative", "Normative"],
-            horizontal=True,
-            key=f"fv_export_mode_{exercise.get('id')}",
-        )
-        export_language = st.selectbox(
-            "PDF language",
-            options=["English", "Slovak"],
-            key=f"fv_export_language_{exercise.get('id')}",
-        )
-        logo_bytes = render_logo_library_selector(f"fv_logo_{exercise.get('id')}")
-
-        selected_runner = selected_report.get("runnerInfo") or runner_info or {}
-        export_name = (
-            format_optional_value(selected_runner.get("displayName"))
-            if format_optional_value(selected_runner.get("displayName")) != "-"
-            else format_optional_value(client.get("displayName"))
-        )
-        player_client_id = str(
-            selected_runner.get("clientId")
-            or client.get("id")
-            or ""
-        )
-
-        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-        metric_col1.metric("Selected F0", format_decimal(selected_report.get("f0")))
-        metric_col2.metric("Selected V0", format_decimal(selected_report.get("v0")))
-        metric_col3.metric("Selected PMax", format_decimal(selected_report.get("pMax")))
-        metric_col4.metric("Selected Confidence", format_decimal(selected_report.get("confidence"), 3))
-
-        player_photo_bytes = render_player_photo_selector(
-            f"fv_player_photo_{exercise.get('id')}",
-            player_client_id,
-        ) if player_client_id else None
-
-        if export_mode == "Normative":
-            norms, norms_error = load_fv_norms()
-            if norms_error:
-                st.error(norms_error)
-            else:
-                norm_options = {str(item.get("category")): item for item in norms}
-                selected_norm_category = st.selectbox(
-                    "Select quadrant reference category",
-                    options=list(norm_options.keys()),
-                    key=f"fv_norm_category_{exercise.get('id')}",
-                )
-                selected_norm = norm_options[selected_norm_category]
-
-                reference_col1, reference_col2, reference_col3 = st.columns(3)
-                reference_col1.metric(
-                    "Reference F0 median",
-                    format_decimal(selected_norm.get("f0_median")),
-                )
-                reference_col2.metric(
-                    "Reference V0 median",
-                    format_decimal(selected_norm.get("v0_median")),
-                )
-                reference_col3.metric(
-                    "Reference sample",
-                    format_optional_value(selected_norm.get("used_n") or selected_norm.get("raw_n")),
-                )
-                quadrant = get_norm_quadrant(selected_report, selected_norm)
-                st.write(f"**Quadrant result:** {get_quadrant_result(quadrant, export_language)}")
-                st.write(f"**Recommendation:**")
-                for item in get_quadrant_recommendations(quadrant, export_language):
-                    st.write(f"- {item}")
-
-                missing_values = [
-                    key
-                    for key in ("f0_median", "v0_median")
-                    if selected_norm.get(key) in (None, "")
-                ]
-                if missing_values:
-                    st.warning(
-                        "Selected norm category is missing values in the workbook: "
-                        + ", ".join(missing_values)
-                    )
-                else:
-                    pdf_bytes = build_normative_fv_pdf(
-                        selected_report,
-                        export_name,
-                        logo_bytes,
-                        player_photo_bytes,
-                        selected_norm,
-                        export_language,
-                    )
-                    file_name = (
-                        f"{safe_filename(export_name)}_{safe_filename(selected_norm_category)}_"
-                        f"{safe_filename(str(exercise.get('id')))}_fv_normative.pdf"
-                    )
-                    st.download_button(
-                        "Download normative FV PDF",
-                        data=pdf_bytes,
-                        file_name=file_name,
-                        mime="application/pdf",
-                        key=f"fv_pdf_normative_{exercise.get('id')}",
-                        use_container_width=True,
-                    )
-        else:
-            pdf_bytes = build_non_normative_fv_pdf(
-                selected_report,
-                export_name,
-                logo_bytes,
-                player_photo_bytes,
-                export_language,
-            )
-            file_name = f"{safe_filename(export_name)}_{safe_filename(str(exercise.get('id')))}_fv_profile.pdf"
-            st.download_button(
-                "Download FV PDF",
-                data=pdf_bytes,
-                file_name=file_name,
-                mime="application/pdf",
-                key=f"fv_pdf_download_{exercise.get('id')}",
-                use_container_width=True,
-            )
+        st.caption("PDF export options are now grouped in a separate popup.")
+        if st.button("Open FV PDF export", key=f"fv_export_open_{exercise.get('id')}", use_container_width=True):
+            render_fv_export_dialog(exercise, reports, runner_info, client)
     else:
         st.info("No FV runs were returned for this exercise.")
 
