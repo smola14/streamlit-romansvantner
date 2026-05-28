@@ -689,6 +689,18 @@ def append_split_debug(
     )
 
 
+def sanitize_for_debug(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: sanitize_for_debug(item)
+            for key, item in value.items()
+            if key != "_debug_fetches"
+        }
+    if isinstance(value, list):
+        return [sanitize_for_debug(item) for item in value]
+    return value
+
+
 def load_split_payload_for_exercise(
     api_key: str,
     exercise_id: str,
@@ -1150,7 +1162,7 @@ def render_login() -> None:
         with st.form("auth-login-form"):
             email = st.text_input("Email", placeholder="you@example.com").strip().lower()
             password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Sign in", use_container_width=True)
+            submitted = st.form_submit_button("Sign in", width="stretch")
 
         if submitted:
             stored_hash = auth_users.get(email)
@@ -1893,7 +1905,7 @@ def render_fv_export_dialog(
             file_name=file_name,
             mime="application/pdf",
             key=f"fv_pdf_normative_{exercise.get('id')}",
-            use_container_width=True,
+            width="stretch",
         )
     else:
         pdf_bytes = build_non_normative_fv_pdf(
@@ -1910,7 +1922,7 @@ def render_fv_export_dialog(
             file_name=file_name,
             mime="application/pdf",
             key=f"fv_pdf_download_{exercise.get('id')}",
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -1926,7 +1938,7 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
         if st.button(
             "Open FV PDF export",
             key=f"fv_export_open_top_{exercise.get('id')}",
-            use_container_width=True,
+            width="stretch",
         ):
             render_fv_export_dialog(exercise, reports, runner_info, client)
 
@@ -1944,7 +1956,7 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
             }
             for index, report in enumerate(reports)
         ]
-        st.dataframe(summary_rows, use_container_width=True, hide_index=True)
+        st.dataframe(summary_rows, width="stretch", hide_index=True)
         st.caption("Review the runs, then use the export button above when you are ready to create a PDF.")
     else:
         st.info("No FV runs were returned for this exercise.")
@@ -1977,15 +1989,15 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
             )
 
     if split_rows:
-        st.dataframe(split_rows, use_container_width=True, hide_index=True)
+        st.dataframe(split_rows, width="stretch", hide_index=True)
     else:
         st.info("No split rows were returned for this exercise.")
 
     if debug_fetches:
         st.markdown("#### Split debug")
-        st.json(debug_fetches)
+        st.json(sanitize_for_debug(debug_fetches))
     st.markdown("#### Split payload")
-    st.json(payload)
+    st.json(sanitize_for_debug(payload))
 
 
 def render_session_detail_content(
@@ -2007,7 +2019,7 @@ def render_session_detail_content(
             }
             for exercise in exercises
         ]
-        st.dataframe(exercise_rows, use_container_width=True, hide_index=True)
+        st.dataframe(exercise_rows, width="stretch", hide_index=True)
 
         api_key = st.session_state.get("api_key", "")
         fv_exercises = [
@@ -2093,7 +2105,7 @@ def render_session_selection_block(
             if row_col2.button(
                 button_label,
                 key=f"{table_key}_open_{index}",
-                use_container_width=True,
+                width="stretch",
                 type=button_type,
             ) and not is_selected:
                 st.session_state[f"selected_session_id_{scope}"] = session_id
@@ -2133,7 +2145,7 @@ def render_client_detail(client: dict[str, Any]) -> None:
     filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 0.8])
     filter_col1.date_input("From", key="session_filter_from")
     filter_col2.date_input("To", key="session_filter_to")
-    reload_sessions = filter_col3.button("Refresh sessions", use_container_width=True)
+    reload_sessions = filter_col3.button("Refresh sessions", width="stretch")
 
     if st.session_state["session_filter_from"] > st.session_state["session_filter_to"]:
         st.error("The start date must be earlier than or equal to the end date.")
@@ -2231,14 +2243,14 @@ def render_dashboard() -> None:
     col4.metric("Last synced", format_sync_label(st.session_state["clients_last_synced"]))
 
     action_col1, action_col2 = st.columns([1, 1])
-    if action_col1.button("Reload clients", use_container_width=True):
+    if action_col1.button("Reload clients", width="stretch"):
         with st.spinner("Reloading clients from the 1080 API..."):
             loaded = load_clients_from_api(api_key)
         st.session_state["client_storage_autoload_complete"] = True
         if loaded:
             st.rerun()
 
-    action_col2.button("Sign out", on_click=logout, use_container_width=True)
+    action_col2.button("Sign out", on_click=logout, width="stretch")
 
     if st.session_state["client_storage_error"]:
         st.error(st.session_state["client_storage_error"])
@@ -2342,7 +2354,7 @@ def render_dashboard() -> None:
             selected_client_id = st.session_state.get("selected_client_id", "")
             table_event = st.dataframe(
                 preview,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 on_select="rerun",
                 selection_mode="single-row",
