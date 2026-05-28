@@ -18,13 +18,17 @@ from fpdf import FPDF
 
 
 API_BASE_URL = os.getenv("API1080_BASE_URL", "https://publicapi.1080motion.com").rstrip("/")
+APP_PIN = st.secrets.get("app_pin", os.getenv("APP_PIN", "")).strip()
 API_TIMEOUT_SECONDS = 20
 BLUE_RGB = (48, 54, 116)
 BLACK_RGB = (37, 36, 35)
 BLUE_HEX = "#303674"
 FV_NORMS_PATH = Path(__file__).resolve().parent / "data" / "fv_norms.xlsx"
+FV_NORM_SCATTER_PATH = Path(__file__).resolve().parent / "data" / "fv_norm_scatter.json"
 UPLOADED_LOGOS_DIR = Path(__file__).resolve().parent / "uploaded_logos"
 UPLOADED_PLAYER_PHOTOS_DIR = Path(__file__).resolve().parent / "uploaded_player_photos"
+MAX_LOGO_BYTES = 2 * 1024 * 1024
+MAX_PLAYER_PHOTO_BYTES = 5 * 1024 * 1024
 
 
 PDF_TEXT = {
@@ -460,6 +464,19 @@ def load_player_photo_bytes(client_id: str) -> bytes | None:
     return path.read_bytes()
 
 
+def validate_uploaded_file_size(uploaded_file: Any, max_bytes: int, label: str) -> bool:
+    if uploaded_file is None:
+        return True
+
+    file_size = len(uploaded_file.getvalue())
+    if file_size > max_bytes:
+        max_mb = max_bytes / (1024 * 1024)
+        st.error(f"{label} is too large. Maximum allowed size is {max_mb:.0f} MB.")
+        return False
+
+    return True
+
+
 def render_logo_library_selector(key_prefix: str) -> bytes | None:
     saved_logos = list_uploaded_logos()
     selected_logo_state_key = f"{key_prefix}_selected_logo_name"
@@ -478,7 +495,7 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
 
     select_col, upload_col = st.columns([1, 1])
     selected_logo = select_col.selectbox(
-        "Saved logos",
+        "Choose logo",
         options=options,
         key=selected_logo_state_key,
     )
@@ -487,16 +504,19 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=False,
         key=f"{key_prefix}_logo_upload",
+        help="Maximum file size: 2 MB",
     )
 
-    if uploaded_logo is not None:
+    logo_is_valid = validate_uploaded_file_size(uploaded_logo, MAX_LOGO_BYTES, "Logo")
+
+    if uploaded_logo is not None and logo_is_valid:
         if st.button("Save uploaded logo", key=f"{key_prefix}_save_logo", use_container_width=True):
             saved_name = save_uploaded_logo(uploaded_logo)
             st.session_state[pending_logo_state_key] = saved_name
             st.success(f"Saved logo: {saved_name}")
             st.rerun()
 
-    if uploaded_logo is not None:
+    if uploaded_logo is not None and logo_is_valid:
         return uploaded_logo.getvalue()
 
     if selected_logo != "No saved logo":
@@ -509,30 +529,25 @@ def render_player_photo_selector(key_prefix: str, client_id: str) -> bytes | Non
     saved_photo = get_saved_player_photo_name(client_id)
     current_bytes = load_player_photo_bytes(client_id)
 
-    if saved_photo:
+    if current_bytes:
         st.caption(f"Saved player photo: {saved_photo}")
-    else:
-        st.caption("No saved player photo")
+        st.image(current_bytes, width=120)
+        return current_bytes
 
+    st.caption("No saved player photo")
     uploaded_photo = st.file_uploader(
         "Upload player photo",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=False,
         key=f"{key_prefix}_player_photo_upload",
+        help="Maximum file size: 5 MB",
     )
 
-    if uploaded_photo is not None:
-        preview_col1, preview_col2 = st.columns([1, 1])
-        if preview_col1.button("Save player photo", key=f"{key_prefix}_save_player_photo", use_container_width=True):
-            saved_name = save_player_photo(uploaded_photo, client_id)
-            st.success(f"Saved player photo: {saved_name}")
-            st.rerun()
-        if preview_col2.button("Use uploaded photo only", key=f"{key_prefix}_use_uploaded_photo", use_container_width=True):
-            return uploaded_photo.getvalue()
-        return uploaded_photo.getvalue()
-
-    if current_bytes:
-        st.image(current_bytes, width=120)
+    photo_is_valid = validate_uploaded_file_size(uploaded_photo, MAX_PLAYER_PHOTO_BYTES, "Player photo")
+    if uploaded_photo is not None and photo_is_valid:
+        saved_name = save_player_photo(uploaded_photo, client_id)
+        st.success(f"Saved player photo: {saved_name}")
+        st.rerun()
 
     return current_bytes
 
@@ -554,6 +569,7 @@ def format_sync_label(value: str) -> str:
 
 
 def ensure_session_defaults() -> None:
+    st.session_state.setdefault("pin_verified", False)
     st.session_state.setdefault("api_key", "")
     st.session_state.setdefault("api_valid", False)
     st.session_state.setdefault("clients_cache", [])
@@ -612,6 +628,29 @@ def logout() -> None:
     st.session_state["api_key"] = ""
     st.session_state["api_valid"] = False
     reset_client_cache_state()
+
+
+def verify_pin() -> None:
+    st.session_state["pin_verified"] = False
+
+
+def render_pin_gate() -> None:
+    st.title("1080 Reports")
+    st.write("Enter the app PIN to continue.")
+
+    if not APP_PIN:
+        st.error("App PIN is not configured. Set `app_pin` in Streamlit secrets or `APP_PIN` as an environment variable.")
+        return
+
+    with st.form("pin-gate-form"):
+        entered_pin = st.text_input("App PIN", type="password")
+        submitted = st.form_submit_button("Continue", use_container_width=True)
+
+    if submitted:
+        if entered_pin.strip() == APP_PIN:
+            st.session_state["pin_verified"] = True
+            st.rerun()
+        st.error("Incorrect PIN.")
 
 
 def load_clients_from_api(api_key: str) -> bool:
@@ -789,6 +828,51 @@ def make_fv_profile_player_only(report: dict[str, Any]) -> io.BytesIO:
     return buf
 
 
+def make_norm_scatter_plot(report: dict[str, Any], norm_row: dict[str, Any], scatter_entry: dict[str, Any]) -> io.BytesIO:
+    points = scatter_entry.get("points") or []
+    x_values = [float(point["v0"]) for point in points]
+    y_values = [float(point["f0"]) for point in points]
+    player_v0 = float(report["v0"])
+    player_f0 = float(report["f0"])
+    v0_median = float(norm_row["v0_median"])
+    f0_median = float(norm_row["f0_median"])
+
+    all_x = [*x_values, player_v0]
+    all_y = [*y_values, player_f0]
+    x_span = max(all_x) - min(all_x) if all_x else 1.0
+    y_span = max(all_y) - min(all_y) if all_y else 1.0
+    x_pad = max(x_span * 0.08, 0.15)
+    y_pad = max(y_span * 0.08, 0.15)
+
+    fig, ax = plt.subplots()
+    if x_values and y_values:
+        ax.scatter(x_values, y_values, color="#d0d4db", s=32, alpha=0.9, edgecolors="none")
+
+    ax.scatter([player_v0], [player_f0], color="#FB3331", s=80, zorder=3)
+    ax.axhline(f0_median, color="#252423", linestyle="--", linewidth=1.2)
+    ax.axvline(v0_median, color="#252423", linestyle="--", linewidth=1.2)
+
+    ax.text(v0_median + x_pad * 0.15, max(all_y) + y_pad * 0.1, "Q1", fontsize=10, color="#252423")
+    ax.text(min(all_x) - x_pad * 0.1, max(all_y) + y_pad * 0.1, "Q2", fontsize=10, color="#252423")
+    ax.text(min(all_x) - x_pad * 0.1, min(all_y) - y_pad * 0.35, "Q3", fontsize=10, color="#252423")
+    ax.text(v0_median + x_pad * 0.15, min(all_y) - y_pad * 0.35, "Q4", fontsize=10, color="#252423")
+
+    ax.set_xlim(min(all_x) - x_pad, max(all_x) + x_pad)
+    ax.set_ylim(min(all_y) - y_pad, max(all_y) + y_pad)
+    ax.set_xlabel("V0 [m/s]")
+    ax.set_ylabel("F0 [N/kg]")
+    ax.set_title(f"Quadrant reference | {norm_row.get('category')}")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, linestyle="--", alpha=0.18)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
+
 def build_non_normative_fv_pdf(
     report: dict[str, Any],
     player_name: str,
@@ -885,6 +969,21 @@ def load_fv_norms() -> tuple[list[dict[str, Any]], str | None]:
     return items, None
 
 
+def load_fv_norm_scatter() -> tuple[dict[str, dict[str, Any]], str | None]:
+    if not FV_NORM_SCATTER_PATH.is_file():
+        return {}, f"Norm scatter file not found: {FV_NORM_SCATTER_PATH}"
+
+    try:
+        payload = json.loads(FV_NORM_SCATTER_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {}, f"Could not read norm scatter file: {exc}"
+
+    if not isinstance(payload, dict):
+        return {}, "The norm scatter file did not return the expected object format."
+
+    return payload, None
+
+
 def get_norm_quadrant(report: dict[str, Any], norm_row: dict[str, Any]) -> str:
     f0 = float(report["f0"])
     v0 = float(report["v0"])
@@ -916,10 +1015,15 @@ def build_normative_fv_pdf(
     logo_bytes: bytes | None,
     player_photo_bytes: bytes | None,
     norm_row: dict[str, Any],
+    scatter_entry: dict[str, Any] | None,
     language: str,
 ) -> bytes:
     texts = PDF_TEXT[language]
-    fv_buf = make_fv_profile_player_only(report)
+    fv_buf = (
+        make_norm_scatter_plot(report, norm_row, scatter_entry)
+        if scatter_entry
+        else make_fv_profile_player_only(report)
+    )
     pdf = FPDF("L", "mm", "A4")
     pdf.set_auto_page_break(auto=False)
     pdf.add_page()
@@ -1072,9 +1176,13 @@ def render_fv_export_dialog(
 
     if export_mode == "Normative":
         norms, norms_error = load_fv_norms()
+        scatter_map, scatter_error = load_fv_norm_scatter()
         if norms_error:
             st.error(norms_error)
             return
+        if scatter_error:
+            st.warning(scatter_error)
+            scatter_map = {}
 
         norm_options = {str(item.get("category")): item for item in norms}
         selected_norm_category = st.selectbox(
@@ -1097,6 +1205,7 @@ def render_fv_export_dialog(
             "Reference sample",
             format_optional_value(selected_norm.get("used_n") or selected_norm.get("raw_n")),
         )
+        scatter_entry = scatter_map.get(selected_norm_category)
         quadrant = get_norm_quadrant(selected_report, selected_norm)
         st.write(f"**Quadrant result:** {get_quadrant_result(quadrant, export_language)}")
         st.write("**Recommendation:**")
@@ -1115,14 +1224,15 @@ def render_fv_export_dialog(
             )
             return
 
-        pdf_bytes = build_normative_fv_pdf(
-            selected_report,
-            export_name,
-            logo_bytes,
-            player_photo_bytes,
-            selected_norm,
-            export_language,
-        )
+            pdf_bytes = build_normative_fv_pdf(
+                selected_report,
+                export_name,
+                logo_bytes,
+                player_photo_bytes,
+                selected_norm,
+                scatter_entry,
+                export_language,
+            )
         file_name = (
             f"{safe_filename(export_name)}_{safe_filename(selected_norm_category)}_"
             f"{safe_filename(str(exercise.get('id')))}_fv_normative.pdf"
@@ -1638,6 +1748,10 @@ def main() -> None:
     )
 
     ensure_session_defaults()
+
+    if not st.session_state["pin_verified"]:
+        render_pin_gate()
+        return
 
     if st.session_state["api_valid"]:
         render_dashboard()
