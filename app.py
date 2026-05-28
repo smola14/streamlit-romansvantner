@@ -39,6 +39,7 @@ MAX_LOGO_BYTES = 2 * 1024 * 1024
 MAX_PLAYER_PHOTO_BYTES = 5 * 1024 * 1024
 AUTH_SESSION_DURATION = timedelta(days=1)
 AUTH_STORAGE_KEY = "1080_auth_session"
+RECENT_OPENED_SESSION_DURATION = timedelta(days=1)
 
 
 PDF_TEXT = {
@@ -166,6 +167,9 @@ CLIENT_STORAGE_COMPONENT = st.components.v2.component(
       const syncedKey = `${storageKey}:last_synced`;
       const currentCommandId = data?.commandId ?? "";
       const command = data?.command ?? "read";
+      const recentOpenedStorageKey = data?.recentOpenedStorageKey ?? "1080_recent_opened_sessions";
+      const recentOpenedCommand = data?.recentOpenedCommand ?? "read";
+      const recentOpenedCommandId = data?.recentOpenedCommandId ?? "";
       const authStorageKey = data?.authStorageKey ?? "1080_auth_session";
       const authCommand = data?.authCommand ?? "read";
       const authCommandId = data?.authCommandId ?? "";
@@ -173,6 +177,7 @@ CLIENT_STORAGE_COMPONENT = st.components.v2.component(
       const emitState = () => {
         setStateValue("clients_json", localStorage.getItem(storageKey) ?? "");
         setStateValue("last_synced", localStorage.getItem(syncedKey) ?? "");
+        setStateValue("recent_opened_sessions_json", localStorage.getItem(recentOpenedStorageKey) ?? "");
         setStateValue("auth_session_token", localStorage.getItem(authStorageKey) ?? "");
         setStateValue("auth_storage_ready", true);
       };
@@ -190,6 +195,19 @@ CLIENT_STORAGE_COMPONENT = st.components.v2.component(
         }
 
         window[commandMarkerKey] = currentCommandId;
+      }
+
+      const recentOpenedCommandMarkerKey = `__last_recent_opened_command__:${recentOpenedStorageKey}`;
+      const lastRecentOpenedCommandId = window[recentOpenedCommandMarkerKey];
+
+      if (recentOpenedCommandId && recentOpenedCommandId !== lastRecentOpenedCommandId) {
+        if (recentOpenedCommand === "write") {
+          localStorage.setItem(recentOpenedStorageKey, data?.recentOpenedSessionsJson ?? "");
+        } else if (recentOpenedCommand === "clear") {
+          localStorage.removeItem(recentOpenedStorageKey);
+        }
+
+        window[recentOpenedCommandMarkerKey] = recentOpenedCommandId;
       }
 
       const authCommandMarkerKey = `__last_auth_command__:${authStorageKey}`;
@@ -831,6 +849,11 @@ def storage_namespace(api_key: str) -> str:
     return f"1080_clients:{digest}"
 
 
+def recent_opened_sessions_namespace(api_key: str) -> str:
+    digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+    return f"1080_recent_opened_sessions:{digest}"
+
+
 def normalize_text(text: str) -> str:
     return unicodedata.normalize("NFD", str(text)).encode("ascii", "ignore").decode("utf-8").lower().strip()
 
@@ -1027,6 +1050,27 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def prune_recent_opened_sessions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - RECENT_OPENED_SESSION_DURATION
+    pruned: list[dict[str, Any]] = []
+
+    for item in items:
+        try:
+            opened_at_raw = str(item.get("openedAt") or "")
+            opened_at = datetime.fromisoformat(opened_at_raw)
+        except ValueError:
+            continue
+
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=timezone.utc)
+
+        if opened_at >= cutoff:
+            pruned.append(item)
+
+    pruned.sort(key=lambda item: str(item.get("openedAt") or ""), reverse=True)
+    return pruned[:10]
+
+
 def format_sync_label(value: str) -> str:
     if not value:
         return "Never"
@@ -1095,6 +1139,11 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("client_storage_payload", "")
     st.session_state.setdefault("client_storage_autoload_complete", False)
     st.session_state.setdefault("client_storage_error", "")
+    st.session_state.setdefault("recent_opened_sessions", [])
+    st.session_state.setdefault("recent_opened_command", "read")
+    st.session_state.setdefault("recent_opened_command_id", "")
+    st.session_state.setdefault("recent_opened_sessions_payload", "")
+    st.session_state.setdefault("recent_opened_autoload_complete", False)
     st.session_state.setdefault("selected_client_id", "")
     st.session_state.setdefault("selected_client_last_id", "")
     st.session_state.setdefault("client_sessions", [])
@@ -1116,6 +1165,37 @@ def sync_clients_to_storage(clients: list[dict[str, Any]], last_synced: str) -> 
     st.session_state["client_storage_command_id"] = f"write:{last_synced}"
     st.session_state["client_storage_payload"] = json.dumps(clients)
     st.session_state["client_storage_error"] = ""
+
+
+def sync_recent_opened_sessions_to_storage(items: list[dict[str, Any]]) -> None:
+    pruned_items = prune_recent_opened_sessions(items)
+    st.session_state["recent_opened_sessions"] = pruned_items
+    st.session_state["recent_opened_command"] = "write"
+    st.session_state["recent_opened_command_id"] = f"write:{iso_now()}"
+    st.session_state["recent_opened_sessions_payload"] = json.dumps(pruned_items)
+    st.session_state["recent_opened_autoload_complete"] = True
+
+
+def remember_opened_session(session_detail: dict[str, Any]) -> None:
+    session_id = str(session_detail.get("id") or "")
+    if not session_id:
+        return
+
+    current_items = st.session_state.get("recent_opened_sessions", [])
+    existing = [
+        item for item in current_items
+        if str(item.get("id") or "") != session_id
+    ]
+    existing.insert(
+        0,
+        {
+            "id": session_id,
+            "timestamp": session_detail.get("timestamp"),
+            "clientId": session_detail.get("clientId"),
+            "openedAt": iso_now(),
+        },
+    )
+    sync_recent_opened_sessions_to_storage(existing)
 
 
 def reset_client_cache_state() -> None:
@@ -1327,6 +1407,8 @@ def load_selected_session_detail(scope: str) -> bool:
     st.session_state[f"session_detail_error_{scope}"] = ""
     st.session_state["exercise_report_cache"] = {}
     st.session_state["exercise_report_errors"] = {}
+    if scope == "client":
+        remember_opened_session(session_detail)
     return True
 
 
@@ -2226,6 +2308,7 @@ def render_client_detail(client: dict[str, Any]) -> None:
 def render_dashboard() -> None:
     api_key = st.session_state["api_key"]
     storage_key = storage_namespace(api_key)
+    recent_opened_storage_key = recent_opened_sessions_namespace(api_key)
     auth_user_email = st.session_state.get("auth_user_email", "")
 
     storage_result = CLIENT_STORAGE_COMPONENT(
@@ -2235,16 +2318,22 @@ def render_dashboard() -> None:
             "commandId": st.session_state["client_storage_command_id"],
             "clientsJson": st.session_state["client_storage_payload"],
             "lastSynced": st.session_state["clients_last_synced"],
+            "recentOpenedStorageKey": recent_opened_storage_key,
+            "recentOpenedCommand": st.session_state["recent_opened_command"],
+            "recentOpenedCommandId": st.session_state["recent_opened_command_id"],
+            "recentOpenedSessionsJson": st.session_state["recent_opened_sessions_payload"],
         },
-        default={"clients_json": "", "last_synced": ""},
+        default={"clients_json": "", "last_synced": "", "recent_opened_sessions_json": ""},
         on_clients_json_change=lambda: None,
         on_last_synced_change=lambda: None,
+        on_recent_opened_sessions_json_change=lambda: None,
         key="client_storage_bridge",
         height=0,
     )
 
     cached_clients_json = storage_result.clients_json or ""
     cached_last_synced = storage_result.last_synced or ""
+    cached_recent_opened_json = getattr(storage_result, "recent_opened_sessions_json", "") or ""
 
     if (
         not st.session_state["client_storage_autoload_complete"]
@@ -2272,6 +2361,23 @@ def render_dashboard() -> None:
         st.session_state["client_storage_autoload_complete"] = True
         if loaded:
             st.rerun()
+
+    if not st.session_state["recent_opened_autoload_complete"]:
+        if cached_recent_opened_json:
+            try:
+                cached_recent_opened = json.loads(cached_recent_opened_json)
+                pruned_recent_opened = prune_recent_opened_sessions(cached_recent_opened)
+                st.session_state["recent_opened_sessions"] = pruned_recent_opened
+                st.session_state["recent_opened_autoload_complete"] = True
+                if json.dumps(pruned_recent_opened) != cached_recent_opened_json:
+                    sync_recent_opened_sessions_to_storage(pruned_recent_opened)
+                    st.rerun()
+            except json.JSONDecodeError:
+                st.session_state["recent_opened_sessions"] = []
+                st.session_state["recent_opened_autoload_complete"] = True
+        else:
+            st.session_state["recent_opened_sessions"] = []
+            st.session_state["recent_opened_autoload_complete"] = True
 
     st.markdown(
         """
@@ -2336,6 +2442,17 @@ def render_dashboard() -> None:
                 )
             else:
                 st.info("No sessions were found in the last 7 days.")
+
+            recent_opened_sessions = st.session_state.get("recent_opened_sessions", [])
+            if recent_opened_sessions:
+                st.markdown("### Recent opened sessions")
+                st.caption("Recently opened from the Athletes section. Stored for 1 day.")
+                render_session_selection_block(
+                    sessions=recent_opened_sessions,
+                    client_lookup=get_client_lookup(st.session_state.get("clients_cache", [])),
+                    scope="recent_opened",
+                    table_key="recent_opened_sessions_table",
+                )
 
     with athletes_tab:
         st.markdown("### Athletes")
