@@ -19,9 +19,9 @@ The current MVP also supports:
 - automatic `Running (LR)` FV profile fetch
 - automatic `15-0-5` split profile fetch
 - non-normative FV PDF export for a selected run with optional uploaded logo
-- normative FV PDF export based on [`data/fv_norms.xlsx`](/Users/smola/Projects/streamlit-romansvantner/data/fv_norms.xlsx)
+- quadrant-based FV PDF export based on cohort medians in [`data/fv_norms.xlsx`](/Users/smola/Projects/streamlit-romansvantner/app/data/fv_norms.xlsx)
 
-The shipped normative values are placeholders so you can test the flow immediately. Replace them with your own category standards.
+The quadrant reference file is expected to contain at least `category`, `f0_median`, and `v0_median`. The bundled file can be regenerated from source data with `../norm.py`.
 
 ## Optional environment variables
 
@@ -35,4 +35,4 @@ export API1080_BASE_URL=https://publicapi.1080motion.com
 - `requirements.txt` - Python dependencies
 - `.gitignore` - common ignored files
 - `v1.json` - local OpenAPI documentation for the 1080 API
-- `data/fv_norms.xlsx` - editable FV normative ranges for categories `U14`, `U15`, `U16`, `U17`, `U19`, `Men`
+- `data/fv_norms.xlsx` - editable FV quadrant reference medians for categories such as `U14`, `U15`, `U16`, `U17`, `U19`

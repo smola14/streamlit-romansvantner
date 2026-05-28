@@ -871,7 +871,7 @@ def load_fv_norms() -> tuple[list[dict[str, Any]], str | None]:
         return [], "The norms workbook is empty."
 
     headers = [str(cell).strip() if cell is not None else "" for cell in rows[0]]
-    required = ["category", "f0_min", "f0_max", "v0_min", "v0_max"]
+    required = ["category", "f0_median", "v0_median"]
     missing = [name for name in required if name not in headers]
     if missing:
         return [], f"The norms workbook is missing columns: {', '.join(missing)}"
@@ -885,26 +885,11 @@ def load_fv_norms() -> tuple[list[dict[str, Any]], str | None]:
     return items, None
 
 
-def get_norm_status(value: Any, lower: Any, upper: Any) -> str:
-    try:
-        numeric_value = float(value)
-        numeric_lower = float(lower)
-        numeric_upper = float(upper)
-    except (TypeError, ValueError):
-        return "No norm"
-
-    if numeric_value < numeric_lower:
-        return "Below"
-    if numeric_value > numeric_upper:
-        return "Above"
-    return "Within"
-
-
 def get_norm_quadrant(report: dict[str, Any], norm_row: dict[str, Any]) -> str:
     f0 = float(report["f0"])
     v0 = float(report["v0"])
-    f0_mid = (float(norm_row["f0_min"]) + float(norm_row["f0_max"])) / 2
-    v0_mid = (float(norm_row["v0_min"]) + float(norm_row["v0_max"])) / 2
+    f0_mid = float(norm_row["f0_median"])
+    v0_mid = float(norm_row["v0_median"])
 
     if v0 > v0_mid and f0 > f0_mid:
         return "Q1"
@@ -1120,30 +1105,24 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
             else:
                 norm_options = {str(item.get("category")): item for item in norms}
                 selected_norm_category = st.selectbox(
-                    "Select normative category",
+                    "Select quadrant reference category",
                     options=list(norm_options.keys()),
                     key=f"fv_norm_category_{exercise.get('id')}",
                 )
                 selected_norm = norm_options[selected_norm_category]
 
-                status_col1, status_col2 = st.columns(2)
-                f0_status = get_norm_status(
-                    selected_report.get("f0"),
-                    selected_norm.get("f0_min"),
-                    selected_norm.get("f0_max"),
+                reference_col1, reference_col2, reference_col3 = st.columns(3)
+                reference_col1.metric(
+                    "Reference F0 median",
+                    format_decimal(selected_norm.get("f0_median")),
                 )
-                v0_status = get_norm_status(
-                    selected_report.get("v0"),
-                    selected_norm.get("v0_min"),
-                    selected_norm.get("v0_max"),
+                reference_col2.metric(
+                    "Reference V0 median",
+                    format_decimal(selected_norm.get("v0_median")),
                 )
-                status_col1.metric(
-                    "F0 vs norm",
-                    f0_status,
-                )
-                status_col2.metric(
-                    "V0 vs norm",
-                    v0_status,
+                reference_col3.metric(
+                    "Reference sample",
+                    format_optional_value(selected_norm.get("used_n") or selected_norm.get("raw_n")),
                 )
                 quadrant = get_norm_quadrant(selected_report, selected_norm)
                 st.write(f"**Quadrant result:** {get_quadrant_result(quadrant, export_language)}")
@@ -1153,7 +1132,7 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
 
                 missing_values = [
                     key
-                    for key in ("f0_min", "f0_max", "v0_min", "v0_max")
+                    for key in ("f0_median", "v0_median")
                     if selected_norm.get(key) in (None, "")
                 ]
                 if missing_values:
