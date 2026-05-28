@@ -24,6 +24,9 @@ APP_API_KEY = st.secrets.get("api_1080_key", os.getenv("API1080_KEY", "")).strip
 API_TIMEOUT_SECONDS = 20
 BLUE_RGB = (48, 54, 116)
 BLACK_RGB = (37, 36, 35)
+GREEN_RGB = (0, 192, 96)
+ORANGE_RGB = (254, 148, 65)
+RED_RGB = (251, 51, 49)
 BLUE_HEX = "#303674"
 FV_NORMS_PATH = Path(__file__).resolve().parent / "data" / "fv_norms.xlsx"
 FV_NORM_SCATTER_PATH = Path(__file__).resolve().parent / "data" / "fv_norm_scatter.json"
@@ -537,17 +540,18 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     saved_logos = list_uploaded_logos()
     selected_logo_state_key = f"{key_prefix}_selected_logo_name"
     pending_logo_state_key = f"{key_prefix}_pending_saved_logo"
+    default_option = "No saved logo" if not saved_logos else saved_logos[0]
 
     if selected_logo_state_key not in st.session_state:
-        st.session_state[selected_logo_state_key] = "No saved logo"
+        st.session_state[selected_logo_state_key] = default_option
 
     pending_logo_name = st.session_state.pop(pending_logo_state_key, None)
     if pending_logo_name:
         st.session_state[selected_logo_state_key] = pending_logo_name
 
-    options = ["No saved logo", *saved_logos]
+    options = saved_logos or ["No saved logo"]
     if st.session_state[selected_logo_state_key] not in options:
-        st.session_state[selected_logo_state_key] = "No saved logo"
+        st.session_state[selected_logo_state_key] = default_option
 
     st.markdown("##### Branding")
     select_col, upload_col = st.columns([1, 1])
@@ -882,6 +886,26 @@ def rounded_corner_cell(pdf: FPDF, x: float, y: float, w: float, h: float, text:
     pdf.cell(w, h, text, 0, 0, "C")
 
 
+def get_quadrant_badge_fill(quadrant: str) -> tuple[int, int, int]:
+    if quadrant == "Q1":
+        return (14, 108, 79)
+    if quadrant == "Q2":
+        return ORANGE_RGB
+    if quadrant == "Q3":
+        return RED_RGB
+    return ORANGE_RGB
+
+
+def get_quadrant_result_fill(quadrant: str) -> tuple[int, int, int]:
+    if quadrant == "Q1":
+        return GREEN_RGB
+    if quadrant == "Q2":
+        return (255, 188, 89)
+    if quadrant == "Q3":
+        return (240, 131, 133)
+    return (255, 188, 89)
+
+
 def configure_pdf_font(pdf: FPDF) -> str:
     font_path = font_manager.findfont("DejaVu Sans")
     if font_path and os.path.isfile(font_path):
@@ -1004,7 +1028,7 @@ def make_normative_fv_charts(
 
     bbox = dict(boxstyle="round", edgecolor="none", facecolor=BLUE_HEX)
 
-    fig, (ax_scatter, ax_line) = plt.subplots(1, 2, figsize=(10.5, 4.6))
+    fig, (ax_scatter, ax_line) = plt.subplots(2, 1, figsize=(5.8, 8.2))
 
     if x_values and y_values:
         ax_scatter.scatter(x_values, y_values, color="#d0d4db", s=28, alpha=0.9, edgecolors="none")
@@ -1056,7 +1080,7 @@ def make_normative_fv_charts(
     ax_line.margins(x=0.05, y=0.05)
 
     buf = io.BytesIO()
-    fig.tight_layout()
+    fig.tight_layout(h_pad=1.3)
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     buf.seek(0)
     plt.close(fig)
@@ -1236,10 +1260,15 @@ def build_normative_fv_pdf(
     quadrant_result = get_quadrant_result(quadrant, language)
     recommendations = get_quadrant_recommendations(quadrant, language)
 
-    pdf.set_xy(45, 46)
-    pdf.set_font(font_family, "", 16)
-    pdf.set_text_color(*BLACK_RGB)
-    pdf.cell(0, 10, quadrant_result, new_x="LMARGIN", new_y="NEXT")
+    badge_x = 45
+    badge_y = 46
+    pdf.set_font(font_family, "", 12)
+    pdf.set_fill_color(*get_quadrant_badge_fill(quadrant))
+    pdf.set_text_color(255, 255, 255)
+    rounded_corner_cell(pdf, badge_x, badge_y, 14, 11, quadrant)
+
+    pdf.set_fill_color(*get_quadrant_result_fill(quadrant))
+    rounded_corner_cell(pdf, badge_x + 16, badge_y, 92, 11, quadrant_result)
 
     pdf.image(fv_buf, x=20, y=55, w=125)
     if player_photo_bytes:
@@ -1340,6 +1369,28 @@ def render_fv_export_dialog(
         options=["English", "Slovak"],
         key=f"fv_export_language_{exercise.get('id')}",
     )
+    selected_norm = None
+    selected_norm_category = ""
+    scatter_entry = None
+    if export_mode == "Normative":
+        norms, norms_error = load_fv_norms()
+        scatter_map, scatter_error = load_fv_norm_scatter()
+        if norms_error:
+            st.error(norms_error)
+            return
+        if scatter_error:
+            st.warning(scatter_error)
+            scatter_map = {}
+
+        norm_options = {str(item.get("category")): item for item in norms}
+        selected_norm_category = st.selectbox(
+            "Reference category",
+            options=list(norm_options.keys()),
+            key=f"fv_norm_category_{exercise.get('id')}",
+        )
+        selected_norm = norm_options[selected_norm_category]
+        scatter_entry = scatter_map.get(selected_norm_category)
+
     logo_bytes = render_logo_library_selector(f"fv_logo_{exercise.get('id')}")
 
     selected_runner = selected_report.get("runnerInfo") or runner_info or {}
@@ -1365,24 +1416,7 @@ def render_fv_export_dialog(
         player_client_id,
     ) if player_client_id else None
 
-    if export_mode == "Normative":
-        norms, norms_error = load_fv_norms()
-        scatter_map, scatter_error = load_fv_norm_scatter()
-        if norms_error:
-            st.error(norms_error)
-            return
-        if scatter_error:
-            st.warning(scatter_error)
-            scatter_map = {}
-
-        norm_options = {str(item.get("category")): item for item in norms}
-        selected_norm_category = st.selectbox(
-            "Reference category",
-            options=list(norm_options.keys()),
-            key=f"fv_norm_category_{exercise.get('id')}",
-        )
-        selected_norm = norm_options[selected_norm_category]
-
+    if export_mode == "Normative" and selected_norm is not None:
         reference_col1, reference_col2, reference_col3 = st.columns(3)
         reference_col1.metric(
             "Reference F0 median",
@@ -1396,12 +1430,6 @@ def render_fv_export_dialog(
             "Reference sample",
             format_optional_value(selected_norm.get("used_n") or selected_norm.get("raw_n")),
         )
-        scatter_entry = scatter_map.get(selected_norm_category)
-        quadrant = get_norm_quadrant(selected_report, selected_norm)
-        st.write(f"**Quadrant result:** {get_quadrant_result(quadrant, export_language)}")
-        st.write("**Recommendations**")
-        for item in get_quadrant_recommendations(quadrant, export_language):
-            st.write(f"- {item}")
 
         missing_values = [
             key
