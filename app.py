@@ -174,6 +174,7 @@ CLIENT_STORAGE_COMPONENT = st.components.v2.component(
         setStateValue("clients_json", localStorage.getItem(storageKey) ?? "");
         setStateValue("last_synced", localStorage.getItem(syncedKey) ?? "");
         setStateValue("auth_session_token", localStorage.getItem(authStorageKey) ?? "");
+        setStateValue("auth_storage_ready", true);
       };
 
       const commandMarkerKey = `__last_command__:${storageKey}`;
@@ -744,20 +745,25 @@ def handle_auth_storage_bridge() -> None:
             "authCommandId": st.session_state["auth_storage_command_id"],
             "authSessionToken": st.session_state["auth_session_token"],
         },
-        default={"clients_json": "", "last_synced": "", "auth_session_token": ""},
+        default={"clients_json": "", "last_synced": "", "auth_session_token": "", "auth_storage_ready": False},
         on_clients_json_change=lambda: None,
         on_last_synced_change=lambda: None,
         on_auth_session_token_change=lambda: None,
+        on_auth_storage_ready_change=lambda: None,
         key="auth_storage_bridge",
         height=0,
     )
 
     auth_token = getattr(storage_result, "auth_session_token", "") or ""
+    auth_storage_ready = bool(getattr(storage_result, "auth_storage_ready", False))
 
     if (
         not st.session_state["auth_verified"]
         and not st.session_state["auth_storage_autoload_complete"]
     ):
+        if not auth_storage_ready:
+            return
+
         if auth_token and restore_auth_session_from_token(auth_token):
             st.rerun()
 
@@ -2103,6 +2109,10 @@ def main() -> None:
     render_app_styles()
     ensure_session_defaults()
     handle_auth_storage_bridge()
+
+    if not st.session_state["auth_verified"] and not st.session_state["auth_storage_autoload_complete"]:
+        st.caption("Checking saved session...")
+        return
 
     if st.session_state["auth_verified"] and st.session_state["api_valid"]:
         render_dashboard()
