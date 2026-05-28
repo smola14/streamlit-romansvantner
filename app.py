@@ -473,13 +473,11 @@ def save_uploaded_logo(uploaded_file: Any) -> str:
     suffix = Path(original_name).suffix.lower() or ".png"
     base_name = safe_filename(stem) or "logo"
     candidate = f"{base_name}{suffix}"
-    counter = 1
-
-    while (UPLOADED_LOGOS_DIR / candidate).exists():
-        candidate = f"{base_name}_{counter}{suffix}"
-        counter += 1
-
     target_path = UPLOADED_LOGOS_DIR / candidate
+
+    if target_path.exists():
+        raise FileExistsError(candidate)
+
     target_path.write_bytes(uploaded_file.getvalue())
     return candidate
 
@@ -551,6 +549,7 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     saved_logos = list_uploaded_logos()
     selected_logo_state_key = f"{key_prefix}_selected_logo_name"
     pending_logo_state_key = f"{key_prefix}_pending_saved_logo"
+    processed_logo_upload_key = f"{key_prefix}_processed_logo_upload"
     default_option = "No saved logo" if not saved_logos else "Choose logo"
 
     if selected_logo_state_key not in st.session_state:
@@ -581,12 +580,20 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
 
     logo_is_valid = validate_uploaded_file_size(uploaded_logo, MAX_LOGO_BYTES, "Logo")
 
-    if uploaded_logo is not None and logo_is_valid:
-        if st.button("Save uploaded logo", key=f"{key_prefix}_save_logo", use_container_width=True):
-            saved_name = save_uploaded_logo(uploaded_logo)
-            st.session_state[pending_logo_state_key] = saved_name
-            st.success(f"Saved logo: {saved_name}")
-            st.rerun()
+    if uploaded_logo is None:
+        st.session_state.pop(processed_logo_upload_key, None)
+    elif logo_is_valid:
+        upload_token = f"{getattr(uploaded_logo, 'name', 'logo')}:{len(uploaded_logo.getvalue())}"
+        if st.session_state.get(processed_logo_upload_key) != upload_token:
+            st.session_state[processed_logo_upload_key] = upload_token
+            try:
+                saved_name = save_uploaded_logo(uploaded_logo)
+            except FileExistsError as exc:
+                st.error(f"Logo `{exc.args[0]}` has already been uploaded.")
+            else:
+                st.session_state[pending_logo_state_key] = saved_name
+                st.success(f"Saved logo: {saved_name}")
+                st.rerun()
 
     if uploaded_logo is not None and logo_is_valid:
         return uploaded_logo.getvalue()
@@ -1260,19 +1267,20 @@ def build_normative_fv_pdf(
     left_w = 126
     right_x = 154
     right_w = 129
-    logo_x = left_x
-    logo_y = 16
-    logo_w = 24
-    has_logo = bool(logo_bytes)
-    identity_x = left_x + (logo_w + 8 if has_logo else 0)
+    logo_w = 32
     top_y = 18
     subtitle_y = 29
     badge_y = 39
+    header_bottom_y = badge_y + 11
+    logo_x = pdf.w - logo_w - 12
+    logo_y = top_y + ((header_bottom_y - top_y) - logo_w) / 2
+    has_logo = bool(logo_bytes)
+    identity_x = left_x
     fv_chart_y = 56
     fv_chart_w = left_w
     metrics_y = 148
-    rec_title_y = 158
-    rec_text_y = 166
+    rec_title_y = 154
+    rec_text_y = 161
     photo_w = 46
     photo_x = right_x + (right_w - photo_w) / 2
     photo_y = 14
@@ -1349,14 +1357,14 @@ def build_normative_fv_pdf(
     rounded_corner_cell(pdf, data_x + 26, data_y + 9 + y_second_row, cell_w, cell_h_sub, "DRF")
     rounded_corner_cell(pdf, data_x + 52, data_y + 9 + y_second_row, cell_w, cell_h_sub, "RFmax")
 
-    pdf.set_font(font_family, "", 16)
+    pdf.set_font(font_family, "", 14)
     pdf.set_text_color(*BLACK_RGB)
     pdf.text(right_x, rec_title_y, texts["recommendation"])
-    pdf.set_font(font_family, "", 10)
+    pdf.set_font(font_family, "", 8)
     y_coordinate = rec_text_y
     for item in recommendations:
         pdf.text(right_x, y_coordinate, "* " + item)
-        y_coordinate += 8
+        y_coordinate += 7
 
     if RS_LOGO_PATH.is_file():
         pdf.image(str(RS_LOGO_PATH), x=rs_logo_x, y=rs_logo_y, w=rs_logo_w)
