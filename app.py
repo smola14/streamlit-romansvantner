@@ -338,11 +338,22 @@ def render_app_styles() -> None:
             font-size: 0.92rem;
             margin: 0.18rem 0 0;
         }
+        .session-row-meta {
+            color: rgba(255,255,255,0.68);
+            font-size: 0.92rem;
+            margin: 0.24rem 0 0;
+        }
         .session-row-inline {
             display: flex;
             align-items: baseline;
             gap: 0.65rem;
             flex-wrap: wrap;
+        }
+        .session-row-shell {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
         }
         div[data-testid="stButton"] > button,
         div[data-testid="stDownloadButton"] > button,
@@ -1695,6 +1706,13 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
     st.caption(f"Valid runs: {len(reports)} | Failed runs: {len(failed_reports)}")
 
     if reports:
+        if st.button(
+            "Open FV PDF export",
+            key=f"fv_export_open_top_{exercise.get('id')}",
+            use_container_width=True,
+        ):
+            render_fv_export_dialog(exercise, reports, runner_info, client)
+
         summary_rows = [
             {
                 "Run": index + 1,
@@ -1710,14 +1728,9 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
             for index, report in enumerate(reports)
         ]
         st.dataframe(summary_rows, use_container_width=True, hide_index=True)
-        st.caption("Review the runs, then open the export panel when you are ready to create a PDF.")
-        if st.button("Open FV PDF export", key=f"fv_export_open_{exercise.get('id')}", use_container_width=True):
-            render_fv_export_dialog(exercise, reports, runner_info, client)
+        st.caption("Review the runs, then use the export button above when you are ready to create a PDF.")
     else:
         st.info("No FV runs were returned for this exercise.")
-
-    with st.expander("Technical details"):
-        st.json(payload)
 
 
 def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -1749,9 +1762,6 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
         st.dataframe(split_rows, use_container_width=True, hide_index=True)
     else:
         st.info("No split rows were returned for this exercise.")
-
-    with st.expander("Technical details"):
-        st.json(payload)
 
 
 def render_session_detail_content(
@@ -1817,9 +1827,6 @@ def render_session_detail_content(
     else:
         st.info("No exercises were returned for this session.")
 
-    with st.expander("Technical details"):
-        st.json(session_detail)
-
 
 def render_session_selection_block(
     sessions: list[dict[str, Any]],
@@ -1836,15 +1843,14 @@ def render_session_selection_block(
         athlete_name = get_client_display_name(session.get("clientId"), client_lookup)
         is_selected = session_id == selected_session_id
 
-        row_col1, row_col2 = st.columns([5, 1])
+        st.markdown('<div class="session-row">', unsafe_allow_html=True)
+        row_col1, row_col2 = st.columns([5, 1.1], vertical_alignment="center")
         with row_col1:
             st.markdown(
                 f"""
-                <div class="session-row">
-                  <div class="session-row-inline">
-                    <p class="session-row-title">{session_time}</p>
-                    <p class="session-row-subtitle">{athlete_name}</p>
-                  </div>
+                <div class="session-row-inline">
+                  <p class="session-row-title">{session_time}</p>
+                  <p class="session-row-subtitle">{athlete_name}</p>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -1861,6 +1867,7 @@ def render_session_selection_block(
             with st.spinner("Loading session detail..."):
                 load_selected_session_detail(scope)
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     session_detail_error = st.session_state.get(f"session_detail_error_{scope}", "")
     if session_detail_error:
@@ -1888,9 +1895,6 @@ def render_client_detail(client: dict[str, Any]) -> None:
         st.write(f"**Created:** {format_optional_value(client.get('created'))}")
         st.write(f"**Edited:** {format_optional_value(client.get('edited'))}")
         st.write(f"**Tags:** {format_optional_value(client.get('tags'))}")
-
-    with st.expander("Technical details"):
-        st.json(client)
 
     st.subheader("Sessions")
 
@@ -2082,29 +2086,38 @@ def render_dashboard() -> None:
                 if matches_group and matches_query:
                     filtered_clients.append(client)
 
-            preview = [
-                {
-                    "Name": client.get("displayName"),
-                    "Group": client.get("group"),
-                    "Tags": format_optional_value(client.get("tags")),
-                }
-                for client in filtered_clients
-            ]
             st.caption(f"Showing {len(filtered_clients)} of {len(clients)} athletes")
 
-            table_event = st.dataframe(
-                preview,
-                use_container_width=True,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="clients_table",
-            )
+            selected_client_id = st.session_state.get("selected_client_id", "")
 
-            selected_rows = table_event.selection.rows
-            if selected_rows:
-                selected_client = filtered_clients[selected_rows[0]]
-                st.session_state["selected_client_id"] = str(selected_client.get("id") or "")
+            for index, filtered_client in enumerate(filtered_clients):
+                client_id = str(filtered_client.get("id") or "")
+                is_selected = client_id == selected_client_id
+                group_label = format_optional_value(filtered_client.get("group"))
+                tags_label = format_optional_value(filtered_client.get("tags"))
+
+                st.markdown('<div class="session-row">', unsafe_allow_html=True)
+                row_col1, row_col2 = st.columns([5, 1.1], vertical_alignment="center")
+                with row_col1:
+                    st.markdown(
+                        f"""
+                        <p class="session-row-title">{format_optional_value(filtered_client.get("displayName"))}</p>
+                        <p class="session-row-meta">Group: {group_label} | Tags: {tags_label}</p>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                button_label = "Selected" if is_selected else "Open athlete"
+                button_type = "secondary" if is_selected else "primary"
+                if row_col2.button(
+                    button_label,
+                    key=f"clients_table_open_{index}",
+                    use_container_width=True,
+                    type=button_type,
+                ) and not is_selected:
+                    st.session_state["selected_client_id"] = client_id
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
             selected_client_id = st.session_state.get("selected_client_id", "")
             selected_client = next(
