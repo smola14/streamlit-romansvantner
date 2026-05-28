@@ -321,6 +321,37 @@ def render_app_styles() -> None:
             background: rgba(255,255,255,0.02);
             width: fit-content;
         }
+        .session-row {
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 0.85rem 1rem;
+            background: rgba(255,255,255,0.02);
+            margin-bottom: 0.65rem;
+        }
+        .session-row-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0;
+        }
+        .session-row-subtitle {
+            color: rgba(255,255,255,0.68);
+            font-size: 0.92rem;
+            margin: 0.18rem 0 0;
+        }
+        div[data-testid="stButton"] > button,
+        div[data-testid="stDownloadButton"] > button,
+        div[data-testid="stFormSubmitButton"] > button {
+            background: #2f6df6;
+            color: white;
+            border: 1px solid #2f6df6;
+        }
+        div[data-testid="stButton"] > button:hover,
+        div[data-testid="stDownloadButton"] > button:hover,
+        div[data-testid="stFormSubmitButton"] > button:hover {
+            background: #2559c9;
+            border-color: #2559c9;
+            color: white;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1804,32 +1835,37 @@ def render_session_selection_block(
     table_key: str,
 ) -> None:
     ensure_session_scope_defaults(scope)
+    selected_session_id = st.session_state.get(f"selected_session_id_{scope}", "")
 
-    session_rows = [
-        {
-            "Date": format_session_timestamp(session.get("timestamp")),
-            "Athlete": get_client_display_name(session.get("clientId"), client_lookup),
-        }
-        for session in sessions
-    ]
+    for index, session in enumerate(sessions):
+        session_id = str(session.get("id") or "")
+        session_time = format_session_timestamp(session.get("timestamp"))
+        athlete_name = get_client_display_name(session.get("clientId"), client_lookup)
+        is_selected = session_id == selected_session_id
 
-    session_event = st.dataframe(
-        session_rows,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key=table_key,
-    )
-
-    selected_rows = session_event.selection.rows
-    if selected_rows:
-        selected_session = sessions[selected_rows[0]]
-        selected_session_id = str(selected_session.get("id") or "")
-        if selected_session_id != st.session_state.get(f"selected_session_id_{scope}", ""):
-            st.session_state[f"selected_session_id_{scope}"] = selected_session_id
+        row_col1, row_col2 = st.columns([5, 1])
+        with row_col1:
+            st.markdown(
+                f"""
+                <div class="session-row">
+                  <p class="session-row-title">{session_time}</p>
+                  <p class="session-row-subtitle">{athlete_name}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        button_label = "Selected" if is_selected else "Open session"
+        button_type = "secondary" if is_selected else "primary"
+        if row_col2.button(
+            button_label,
+            key=f"{table_key}_open_{index}",
+            use_container_width=True,
+            type=button_type,
+        ) and not is_selected:
+            st.session_state[f"selected_session_id_{scope}"] = session_id
             with st.spinner("Loading session detail..."):
                 load_selected_session_detail(scope)
+            st.rerun()
 
     session_detail_error = st.session_state.get(f"session_detail_error_{scope}", "")
     if session_detail_error:
