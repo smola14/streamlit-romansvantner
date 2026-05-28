@@ -6,6 +6,7 @@ import io
 import json
 import os
 import unicodedata
+from collections.abc import Mapping
 from pathlib import Path
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -636,7 +637,7 @@ def logout() -> None:
 
 def get_auth_users() -> dict[str, str]:
     users = st.secrets.get("auth_users", {})
-    return dict(users) if isinstance(users, dict) else {}
+    return dict(users) if isinstance(users, Mapping) else {}
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
