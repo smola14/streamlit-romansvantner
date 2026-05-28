@@ -635,22 +635,24 @@ def verify_pin() -> None:
 
 
 def render_pin_gate() -> None:
-    st.title("1080 Reports")
-    st.write("Enter the app PIN to continue.")
+    _, center_col, _ = st.columns([1.2, 1, 1.2])
+    with center_col:
+        st.title("1080 Reports")
+        st.write("Enter the app PIN to continue.")
 
-    if not APP_PIN:
-        st.error("App PIN is not configured. Set `app_pin` in Streamlit secrets or `APP_PIN` as an environment variable.")
-        return
+        if not APP_PIN:
+            st.error("App PIN is not configured. Set `app_pin` in Streamlit secrets or `APP_PIN` as an environment variable.")
+            return
 
-    with st.form("pin-gate-form"):
-        entered_pin = st.text_input("App PIN", type="password")
-        submitted = st.form_submit_button("Continue", use_container_width=True)
+        with st.form("pin-gate-form"):
+            entered_pin = st.text_input("App PIN", type="password")
+            submitted = st.form_submit_button("Continue", use_container_width=True)
 
-    if submitted:
-        if entered_pin.strip() == APP_PIN:
-            st.session_state["pin_verified"] = True
-            st.rerun()
-        st.error("Incorrect PIN.")
+        if submitted:
+            if entered_pin.strip() == APP_PIN:
+                st.session_state["pin_verified"] = True
+                st.rerun()
+            st.error("Incorrect PIN.")
 
 
 def load_clients_from_api(api_key: str) -> bool:
@@ -1515,30 +1517,32 @@ def render_client_detail(client: dict[str, Any]) -> None:
 
 
 def render_login() -> None:
-    st.title("1080 Reports")
-    st.write("Sign in with your 1080 API key to access reporting tools.")
+    _, center_col, _ = st.columns([1.2, 1, 1.2])
+    with center_col:
+        st.title("1080 Reports")
+        st.write("Sign in with your 1080 API key to access reporting tools.")
 
-    with st.form("api-login-form"):
-        api_key = st.text_input("1080 API key", type="password")
-        submitted = st.form_submit_button("Validate API key", use_container_width=True)
+        with st.form("api-login-form"):
+            api_key = st.text_input("1080 API key", type="password")
+            submitted = st.form_submit_button("Validate API key", use_container_width=True)
 
-    if submitted:
-        if not api_key.strip():
-            st.error("Enter an API key.")
-            return
+        if submitted:
+            if not api_key.strip():
+                st.error("Enter an API key.")
+                return
 
-        with st.spinner("Validating API key against the 1080 API..."):
-            is_valid, message = validate_api_key(api_key.strip())
+            with st.spinner("Validating API key against the 1080 API..."):
+                is_valid, message = validate_api_key(api_key.strip())
 
-        if is_valid:
-            st.session_state["api_key"] = api_key.strip()
-            st.session_state["api_valid"] = True
-            st.session_state["client_storage_autoload_complete"] = False
-            st.success(message)
-            st.rerun()
+            if is_valid:
+                st.session_state["api_key"] = api_key.strip()
+                st.session_state["api_valid"] = True
+                st.session_state["client_storage_autoload_complete"] = False
+                st.success(message)
+                st.rerun()
 
-        st.session_state["api_valid"] = False
-        st.error(message)
+            st.session_state["api_valid"] = False
+            st.error(message)
 
 
 def render_dashboard() -> None:
