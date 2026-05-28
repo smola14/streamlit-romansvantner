@@ -175,6 +175,60 @@ CLIENT_STORAGE_COMPONENT = st.components.v2.component(
 )
 
 
+def render_app_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: radial-gradient(circle at top, rgba(48,54,116,0.08), transparent 28%), #0f1117;
+        }
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 3rem;
+            max-width: 1240px;
+        }
+        .hero-card {
+            padding: 1.25rem 1.25rem 0.25rem;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 18px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+            margin-bottom: 1rem;
+        }
+        .section-intro {
+            color: rgba(255,255,255,0.72);
+            margin-top: -0.35rem;
+            margin-bottom: 0;
+            font-size: 0.95rem;
+        }
+        div[data-testid="stMetric"] {
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 0.9rem 1rem;
+            background: rgba(255,255,255,0.02);
+        }
+        div[data-testid="stDataFrame"] {
+            border-radius: 14px;
+            overflow: hidden;
+        }
+        div[data-testid="stForm"] {
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 18px;
+            padding: 1rem 1rem 0.25rem;
+            background: rgba(255,255,255,0.02);
+        }
+        .thumb-card {
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 0.75rem;
+            background: rgba(255,255,255,0.02);
+            width: fit-content;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def build_headers(api_key: str) -> dict[str, str]:
     return {
         "X-1080-API-Key": api_key,
@@ -495,6 +549,7 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     if st.session_state[selected_logo_state_key] not in options:
         st.session_state[selected_logo_state_key] = "No saved logo"
 
+    st.markdown("##### Branding")
     select_col, upload_col = st.columns([1, 1])
     selected_logo = select_col.selectbox(
         "Choose logo",
@@ -532,11 +587,13 @@ def render_player_photo_selector(key_prefix: str, client_id: str) -> bytes | Non
     current_bytes = load_player_photo_bytes(client_id)
 
     if current_bytes:
-        st.caption(f"Saved player photo: {saved_photo}")
+        st.caption("Player photo")
+        st.markdown('<div class="thumb-card">', unsafe_allow_html=True)
         st.image(current_bytes, width=120)
+        st.markdown("</div>", unsafe_allow_html=True)
         return current_bytes
 
-    st.caption("No saved player photo")
+    st.caption("Add a player photo once and it will be reused for future exports.")
     uploaded_photo = st.file_uploader(
         "Upload player photo",
         type=["png", "jpg", "jpeg", "webp"],
@@ -661,8 +718,15 @@ def verify_password(password: str, stored_hash: str) -> bool:
 def render_login() -> None:
     _, center_col, _ = st.columns([1.2, 1, 1.2])
     with center_col:
-        st.title("1080 Reports")
-        st.write("Sign in with your email and password to access reporting tools.")
+        st.markdown(
+            """
+            <div class="hero-card">
+              <h1 style="margin:0;">1080 Reports</h1>
+              <p class="section-intro">Sign in with your email and password to access reporting tools.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         auth_users = get_auth_users()
         if not auth_users:
@@ -673,7 +737,7 @@ def render_login() -> None:
             return
 
         with st.form("auth-login-form"):
-            email = st.text_input("Email").strip().lower()
+            email = st.text_input("Email", placeholder="you@example.com").strip().lower()
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Sign in", use_container_width=True)
 
@@ -918,6 +982,87 @@ def make_norm_scatter_plot(report: dict[str, Any], norm_row: dict[str, Any], sca
     return buf
 
 
+def make_normative_fv_charts(
+    report: dict[str, Any],
+    norm_row: dict[str, Any],
+    scatter_entry: dict[str, Any],
+) -> io.BytesIO:
+    points = scatter_entry.get("points") or []
+    x_values = [float(point["v0"]) for point in points]
+    y_values = [float(point["f0"]) for point in points]
+    player_v0 = float(report["v0"])
+    player_f0 = float(report["f0"])
+    v0_median = float(norm_row["v0_median"])
+    f0_median = float(norm_row["f0_median"])
+
+    all_x = [*x_values, player_v0]
+    all_y = [*y_values, player_f0]
+    x_span = max(all_x) - min(all_x) if all_x else 1.0
+    y_span = max(all_y) - min(all_y) if all_y else 1.0
+    x_pad = max(x_span * 0.08, 0.15)
+    y_pad = max(y_span * 0.08, 0.15)
+
+    bbox = dict(boxstyle="round", edgecolor="none", facecolor=BLUE_HEX)
+
+    fig, (ax_scatter, ax_line) = plt.subplots(1, 2, figsize=(10.5, 4.6))
+
+    if x_values and y_values:
+        ax_scatter.scatter(x_values, y_values, color="#d0d4db", s=28, alpha=0.9, edgecolors="none")
+    ax_scatter.scatter([player_v0], [player_f0], color="#FB3331", s=78, zorder=3)
+    ax_scatter.axhline(f0_median, color="#252423", linestyle="--", linewidth=1.2)
+    ax_scatter.axvline(v0_median, color="#252423", linestyle="--", linewidth=1.2)
+    ax_scatter.text(v0_median + x_pad * 0.15, max(all_y) + y_pad * 0.1, "Q1", fontsize=9, color="#252423")
+    ax_scatter.text(min(all_x) - x_pad * 0.1, max(all_y) + y_pad * 0.1, "Q2", fontsize=9, color="#252423")
+    ax_scatter.text(min(all_x) - x_pad * 0.1, min(all_y) - y_pad * 0.35, "Q3", fontsize=9, color="#252423")
+    ax_scatter.text(v0_median + x_pad * 0.15, min(all_y) - y_pad * 0.35, "Q4", fontsize=9, color="#252423")
+    ax_scatter.set_xlim(min(all_x) - x_pad, max(all_x) + x_pad)
+    ax_scatter.set_ylim(min(all_y) - y_pad, max(all_y) + y_pad)
+    ax_scatter.set_xlabel("V0 [m/s]")
+    ax_scatter.set_ylabel("F0 [N/kg]")
+    ax_scatter.set_title(f"Cohort scatter | {norm_row.get('category')}", fontsize=10)
+    ax_scatter.spines["top"].set_visible(False)
+    ax_scatter.spines["right"].set_visible(False)
+    ax_scatter.grid(True, linestyle="--", alpha=0.18)
+
+    x_player = [0, player_v0]
+    y_player = [player_f0, 0]
+    ax_line.plot(x_player, y_player, label="Player", color=BLUE_HEX, linewidth=2.5)
+    ax_line.annotate(
+        str(round(player_v0, 2)),
+        (player_v0, 0),
+        xytext=(player_v0, -0.6),
+        textcoords="data",
+        ha="center",
+        va="center",
+        color="white",
+        bbox=bbox,
+    )
+    ax_line.annotate(
+        str(round(player_f0, 2)),
+        (0, player_f0),
+        xytext=(-0.6, player_f0),
+        textcoords="data",
+        ha="center",
+        va="center",
+        color="white",
+        bbox=bbox,
+    )
+    ax_line.spines["top"].set_visible(False)
+    ax_line.spines["right"].set_visible(False)
+    ax_line.set_xlabel("V0 [m/s]")
+    ax_line.set_ylabel("F0 [N/kg]")
+    ax_line.set_title("Player FV profile", fontsize=10)
+    ax_line.legend(loc="upper right", frameon=False)
+    ax_line.margins(x=0.05, y=0.05)
+
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
+
 def build_non_normative_fv_pdf(
     report: dict[str, Any],
     player_name: str,
@@ -1065,7 +1210,7 @@ def build_normative_fv_pdf(
 ) -> bytes:
     texts = PDF_TEXT[language]
     fv_buf = (
-        make_norm_scatter_plot(report, norm_row, scatter_entry)
+        make_normative_fv_charts(report, norm_row, scatter_entry)
         if scatter_entry
         else make_fv_profile_player_only(report)
     )
@@ -1171,12 +1316,13 @@ def render_fv_export_dialog(
     client: dict[str, Any],
 ) -> None:
     run_options = {
-        f"{report.get('motionGroupId')} | F0 {format_decimal(report.get('f0'))} | V0 {format_decimal(report.get('v0'))}": report
-        for report in reports
+        f"Run {index + 1} | F0 {format_decimal(report.get('f0'))} | V0 {format_decimal(report.get('v0'))}": report
+        for index, report in enumerate(reports)
     }
 
+    st.caption("Choose the run, report style, and optional assets for the export.")
     selected_run_label = st.selectbox(
-        "Select run for PDF export",
+        "Run",
         options=list(run_options.keys()),
         key=f"fv_run_select_{exercise.get('id')}",
     )
@@ -1184,13 +1330,13 @@ def render_fv_export_dialog(
 
     export_col1, export_col2 = st.columns([1, 1])
     export_mode = export_col1.radio(
-        "PDF mode",
+        "Report type",
         options=["Non-normative", "Normative"],
         horizontal=True,
         key=f"fv_export_mode_{exercise.get('id')}",
     )
     export_language = st.selectbox(
-        "PDF language",
+        "Language",
         options=["English", "Slovak"],
         key=f"fv_export_language_{exercise.get('id')}",
     )
@@ -1231,7 +1377,7 @@ def render_fv_export_dialog(
 
         norm_options = {str(item.get("category")): item for item in norms}
         selected_norm_category = st.selectbox(
-            "Select quadrant reference category",
+            "Reference category",
             options=list(norm_options.keys()),
             key=f"fv_norm_category_{exercise.get('id')}",
         )
@@ -1253,7 +1399,7 @@ def render_fv_export_dialog(
         scatter_entry = scatter_map.get(selected_norm_category)
         quadrant = get_norm_quadrant(selected_report, selected_norm)
         st.write(f"**Quadrant result:** {get_quadrant_result(quadrant, export_language)}")
-        st.write("**Recommendation:**")
+        st.write("**Recommendations**")
         for item in get_quadrant_recommendations(quadrant, export_language):
             st.write(f"- {item}")
 
@@ -1314,7 +1460,7 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
     failed_reports = payload.get("failedReports") or []
     runner_info = reports[0].get("runnerInfo") if reports else None
 
-    st.markdown(f"**Running (LR) FV profile**  `{format_optional_value(exercise.get('id'))}`")
+    st.markdown("### Running (LR) force-velocity profile")
 
     top_col1, top_col2, top_col3 = st.columns(3)
     top_col1.metric("Valid runs", len(reports))
@@ -1324,20 +1470,20 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
     if reports:
         summary_rows = [
             {
-                "motionGroupId": report.get("motionGroupId"),
-                "f0": format_decimal(report.get("f0")),
-                "v0": format_decimal(report.get("v0")),
-                "pMax": format_decimal(report.get("pMax")),
-                "tau": format_decimal(report.get("tau")),
-                "confidence": format_decimal(report.get("confidence"), 3),
-                "estimatedUnloadedMaxSpeed": format_decimal(report.get("estimatedUnloadedMaxSpeed")),
-                "ratioOfForceMax": format_decimal(report.get("ratioOfForceMax")),
-                "ratioOfForceDecrease": format_decimal(report.get("ratioOfForceDecrease")),
+                "Run": index + 1,
+                "F0": format_decimal(report.get("f0")),
+                "V0": format_decimal(report.get("v0")),
+                "PMax": format_decimal(report.get("pMax")),
+                "Tau": format_decimal(report.get("tau")),
+                "Confidence": format_decimal(report.get("confidence"), 3),
+                "Est. unloaded max speed": format_decimal(report.get("estimatedUnloadedMaxSpeed")),
+                "RF max": format_decimal(report.get("ratioOfForceMax")),
+                "Force decrease": format_decimal(report.get("ratioOfForceDecrease")),
             }
-            for report in reports
+            for index, report in enumerate(reports)
         ]
         st.dataframe(summary_rows, use_container_width=True, hide_index=True)
-        st.caption("PDF export options are now grouped in a separate popup.")
+        st.caption("Review the runs, then open the export panel when you are ready to create a PDF.")
         if st.button("Open FV PDF export", key=f"fv_export_open_{exercise.get('id')}", use_container_width=True):
             render_fv_export_dialog(exercise, reports, runner_info, client)
     else:
@@ -1347,14 +1493,14 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
         st.caption("Failed FV reports")
         st.dataframe(failed_reports, use_container_width=True, hide_index=True)
 
-    with st.expander("Raw FV payload"):
+    with st.expander("Technical details"):
         st.json(payload)
 
 
 def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> None:
     reports = payload.get("reports") or []
 
-    st.markdown(f"**15-0-5 split profile**  `{format_optional_value(exercise.get('id'))}`")
+    st.markdown("### 15-0-5 split profile")
 
     top_col1, top_col2, top_col3 = st.columns(3)
     top_col1.metric("Runs", len(reports))
@@ -1362,17 +1508,17 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
     top_col3.metric("Units", "meters" if reports and not reports[0].get("isYards") else "yards")
 
     split_rows: list[dict[str, Any]] = []
-    for report in reports:
+    for report_index, report in enumerate(reports):
         for split in report.get("splits") or []:
             split_rows.append(
                 {
-                    "motionGroupId": report.get("motionGroupId"),
-                    "start": format_decimal(split.get("start")),
-                    "end": format_decimal(split.get("end")),
-                    "time": format_decimal(split.get("time"), 3),
-                    "topSpeed": format_decimal(split.get("topSpeed")),
-                    "maxForce": format_decimal(split.get("maxForce")),
-                    "maxPower": format_decimal(split.get("maxPower")),
+                    "Run": report_index + 1,
+                    "Start": format_decimal(split.get("start")),
+                    "End": format_decimal(split.get("end")),
+                    "Time": format_decimal(split.get("time"), 3),
+                    "Top speed": format_decimal(split.get("topSpeed")),
+                    "Max force": format_decimal(split.get("maxForce")),
+                    "Max power": format_decimal(split.get("maxPower")),
                 }
             )
 
@@ -1381,7 +1527,7 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
     else:
         st.info("No split rows were returned for this exercise.")
 
-    with st.expander("Raw split payload"):
+    with st.expander("Technical details"):
         st.json(payload)
 
 
@@ -1391,21 +1537,21 @@ def render_session_detail_content(
 ) -> None:
     exercises = session_detail.get("exercises") or []
     client = client_lookup.get(str(session_detail.get("clientId") or ""), {})
+    session_time = format_session_timestamp(session_detail.get("timestamp"))
 
-    st.subheader("Session detail")
+    st.subheader("Selected session")
+    st.caption("Session overview and exercise-specific reports.")
 
-    detail_col1, detail_col2, detail_col3, detail_col4 = st.columns(4)
-    detail_col1.metric("Session ID", format_optional_value(session_detail.get("id")))
-    detail_col2.metric("Exercises", len(exercises))
-    detail_col3.metric("Client ID", format_optional_value(session_detail.get("clientId")))
-    detail_col4.metric("Client name", get_client_display_name(session_detail.get("clientId"), client_lookup))
+    detail_col1, detail_col2, detail_col3 = st.columns(3)
+    detail_col1.metric("Athlete", get_client_display_name(session_detail.get("clientId"), client_lookup))
+    detail_col2.metric("Session time", session_time)
+    detail_col3.metric("Exercises", len(exercises))
 
     if exercises:
         exercise_rows = [
             {
-                "exerciseId": exercise.get("id"),
-                "exerciseTypeName": exercise.get("exerciseTypeName"),
-                "sets": len(exercise.get("sets") or []),
+                "Exercise": exercise.get("exerciseTypeName"),
+                "Sets": len(exercise.get("sets") or []),
             }
             for exercise in exercises
         ]
@@ -1453,7 +1599,7 @@ def render_session_detail_content(
     else:
         st.info("No exercises were returned for this session.")
 
-    with st.expander("Raw session payload"):
+    with st.expander("Technical details"):
         st.json(session_detail)
 
 
@@ -1467,10 +1613,8 @@ def render_session_selection_block(
 
     session_rows = [
         {
-            "timestamp": format_session_timestamp(session.get("timestamp")),
-            "clientName": get_client_display_name(session.get("clientId"), client_lookup),
-            "sessionId": session.get("id"),
-            "clientId": session.get("clientId"),
+            "Date": format_session_timestamp(session.get("timestamp")),
+            "Athlete": get_client_display_name(session.get("clientId"), client_lookup),
         }
         for session in sessions
     ]
@@ -1503,17 +1647,16 @@ def render_session_selection_block(
 
 
 def render_client_detail(client: dict[str, Any]) -> None:
-    st.subheader("Client detail")
+    st.subheader("Athlete overview")
+    st.caption("Profile details and recent sessions for the selected athlete.")
 
     top_col1, top_col2, top_col3 = st.columns(3)
     top_col1.metric("Name", format_optional_value(client.get("displayName")))
     top_col2.metric("Group", format_optional_value(client.get("group")))
-    top_col3.metric("External ID", format_optional_value(client.get("externalId")))
+    top_col3.metric("Date of birth", format_optional_value(client.get("dateOfBirth")))
 
     info_col1, info_col2 = st.columns(2)
     with info_col1:
-        st.write(f"**Client ID:** {format_optional_value(client.get('id'))}")
-        st.write(f"**Date of birth:** {format_optional_value(client.get('dateOfBirth'))}")
         st.write(f"**Height:** {format_optional_value(client.get('height'))}")
         st.write(f"**Weight:** {format_optional_value(client.get('weight'))}")
     with info_col2:
@@ -1521,15 +1664,15 @@ def render_client_detail(client: dict[str, Any]) -> None:
         st.write(f"**Edited:** {format_optional_value(client.get('edited'))}")
         st.write(f"**Tags:** {format_optional_value(client.get('tags'))}")
 
-    with st.expander("Raw client payload"):
+    with st.expander("Technical details"):
         st.json(client)
 
-    st.subheader("Client sessions")
+    st.subheader("Sessions")
 
-    filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 1])
+    filter_col1, filter_col2, filter_col3 = st.columns([1, 1, 0.8])
     filter_col1.date_input("From", key="session_filter_from")
     filter_col2.date_input("To", key="session_filter_to")
-    reload_sessions = filter_col3.button("Load sessions", use_container_width=True)
+    reload_sessions = filter_col3.button("Refresh sessions", use_container_width=True)
 
     if st.session_state["session_filter_from"] > st.session_state["session_filter_to"]:
         st.error("The start date must be earlier than or equal to the end date.")
@@ -1608,8 +1751,15 @@ def render_dashboard() -> None:
         if loaded:
             st.rerun()
 
-    st.title("1080 Reports")
-    st.success("Signed in successfully via the 1080 API.")
+    st.markdown(
+        """
+        <div class="hero-card">
+          <h1 style="margin:0;">1080 Reports</h1>
+          <p class="section-intro">Browse athletes, review sessions, and export clean performance reports.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     if auth_user_email:
         st.caption(f"Signed in as {auth_user_email}")
 
@@ -1632,132 +1782,127 @@ def render_dashboard() -> None:
     if st.session_state["client_storage_error"]:
         st.error(st.session_state["client_storage_error"])
 
-    st.subheader("Next step")
-    st.write(
-        "Clients are cached in browser local storage. If no cache is present, the app fetches them automatically."
-    )
+    overview_tab, athletes_tab = st.tabs(["Recent sessions", "Athletes"])
 
-    st.subheader("Recent sessions")
-    recent_from = date.today() - timedelta(days=7)
-    recent_to = date.today()
-    with st.spinner("Loading sessions from the last 7 days..."):
-        recent_sessions, recent_sessions_error = fetch_recent_sessions(api_key, recent_from, recent_to)
+    with overview_tab:
+        st.markdown("### Recent sessions")
+        st.caption("A quick view of the latest activity from the last 7 days.")
+        recent_from = date.today() - timedelta(days=7)
+        recent_to = date.today()
+        with st.spinner("Loading sessions from the last 7 days..."):
+            recent_sessions, recent_sessions_error = fetch_recent_sessions(api_key, recent_from, recent_to)
 
-    if recent_sessions_error:
-        st.error(recent_sessions_error)
-    else:
-        client_lookup = get_client_lookup(st.session_state.get("clients_cache", []))
-        if recent_sessions and has_missing_client_names(recent_sessions, client_lookup):
-            with st.spinner("Refreshing clients to resolve missing session names..."):
-                loaded = load_clients_from_api(api_key)
-            if loaded:
-                st.rerun()
-
-        recent_rows = [
-            {
-                "timestamp": format_session_timestamp(session.get("timestamp")),
-                "sessionId": session.get("id"),
-                "clientId": session.get("clientId"),
-            }
-            for session in (recent_sessions or [])
-        ]
-        st.caption(
-            f"Showing {len(recent_rows)} sessions from {recent_from.isoformat()} to {recent_to.isoformat()}"
-        )
-        if recent_rows:
-            render_session_selection_block(
-                sessions=recent_sessions or [],
-                client_lookup=get_client_lookup(st.session_state.get("clients_cache", [])),
-                scope="recent",
-                table_key="recent_sessions_table",
-            )
+        if recent_sessions_error:
+            st.error(recent_sessions_error)
         else:
-            st.info("No sessions were found in the last 7 days.")
+            client_lookup = get_client_lookup(st.session_state.get("clients_cache", []))
+            if recent_sessions and has_missing_client_names(recent_sessions, client_lookup):
+                with st.spinner("Refreshing clients to resolve missing session names..."):
+                    loaded = load_clients_from_api(api_key)
+                if loaded:
+                    st.rerun()
 
-    clients = st.session_state["clients_cache"]
-    if clients:
-        group_options = sorted(
-            {
-                str(client.get("group")).strip()
-                for client in clients
-                if client.get("group") not in (None, "")
-            }
-        )
+            st.caption(
+                f"Showing {len(recent_sessions or [])} sessions from {recent_from.isoformat()} to {recent_to.isoformat()}"
+            )
+            if recent_sessions:
+                render_session_selection_block(
+                    sessions=recent_sessions,
+                    client_lookup=get_client_lookup(st.session_state.get("clients_cache", [])),
+                    scope="recent",
+                    table_key="recent_sessions_table",
+                )
+            else:
+                st.info("No sessions were found in the last 7 days.")
 
-        filter_col1, filter_col2 = st.columns([2, 1])
-        search_query = filter_col1.text_input(
-            "Search clients",
-            placeholder="Search by name or external ID",
-        ).strip()
-        selected_group = filter_col2.selectbox(
-            "Group",
-            options=["All groups", *group_options],
-            index=0,
-        )
+    with athletes_tab:
+        st.markdown("### Athletes")
+        st.caption("Search and filter the athlete list, then open a profile to review session history.")
 
-        normalized_query = search_query.lower()
-        filtered_clients = []
-        for client in clients:
-            name = str(client.get("displayName") or "")
-            external_id = str(client.get("externalId") or "")
-            group = str(client.get("group") or "")
-
-            matches_group = selected_group == "All groups" or group == selected_group
-            matches_query = (
-                not normalized_query
-                or normalized_query in name.lower()
-                or normalized_query in external_id.lower()
+        clients = st.session_state["clients_cache"]
+        if clients:
+            group_options = sorted(
+                {
+                    str(client.get("group")).strip()
+                    for client in clients
+                    if client.get("group") not in (None, "")
+                }
             )
 
-            if matches_group and matches_query:
-                filtered_clients.append(client)
+            filter_col1, filter_col2 = st.columns([2, 1])
+            search_query = filter_col1.text_input(
+                "Search athletes",
+                placeholder="Search by athlete name or external reference",
+            ).strip()
+            selected_group = filter_col2.selectbox(
+                "Group",
+                options=["All groups", *group_options],
+                index=0,
+            )
 
-        preview = [
-            {
-                "name": client.get("displayName"),
-                "group": client.get("group"),
-                "externalId": client.get("externalId"),
-            }
-            for client in filtered_clients
-        ]
-        st.caption(f"Showing {len(filtered_clients)} of {len(clients)} clients")
+            normalized_query = search_query.lower()
+            filtered_clients = []
+            for client in clients:
+                name = str(client.get("displayName") or "")
+                external_id = str(client.get("externalId") or "")
+                group = str(client.get("group") or "")
 
-        table_event = st.dataframe(
-            preview,
-            use_container_width=True,
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="clients_table",
-        )
+                matches_group = selected_group == "All groups" or group == selected_group
+                matches_query = (
+                    not normalized_query
+                    or normalized_query in name.lower()
+                    or normalized_query in external_id.lower()
+                )
 
-        selected_rows = table_event.selection.rows
-        if selected_rows:
-            selected_client = filtered_clients[selected_rows[0]]
-            st.session_state["selected_client_id"] = str(selected_client.get("id") or "")
+                if matches_group and matches_query:
+                    filtered_clients.append(client)
 
-        selected_client_id = st.session_state.get("selected_client_id", "")
-        selected_client = next(
-            (
-                client
-                for client in clients
-                if str(client.get("id") or "") == selected_client_id
-            ),
-            None,
-        )
+            preview = [
+                {
+                    "Name": client.get("displayName"),
+                    "Group": client.get("group"),
+                    "Tags": format_optional_value(client.get("tags")),
+                }
+                for client in filtered_clients
+            ]
+            st.caption(f"Showing {len(filtered_clients)} of {len(clients)} athletes")
 
-        if selected_client:
-            if st.session_state["selected_client_last_id"] != selected_client_id:
-                st.session_state["selected_client_last_id"] = selected_client_id
-                st.session_state["session_filter_from"] = date.today() - timedelta(days=7)
-                st.session_state["session_filter_to"] = date.today()
-                st.session_state["client_sessions"] = []
-                st.session_state["client_sessions_error"] = ""
-                with st.spinner("Loading sessions for the selected client..."):
-                    load_sessions_for_selected_client()
-            render_client_detail(selected_client)
-    else:
-        st.info("No clients are currently cached.")
+            table_event = st.dataframe(
+                preview,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="clients_table",
+            )
+
+            selected_rows = table_event.selection.rows
+            if selected_rows:
+                selected_client = filtered_clients[selected_rows[0]]
+                st.session_state["selected_client_id"] = str(selected_client.get("id") or "")
+
+            selected_client_id = st.session_state.get("selected_client_id", "")
+            selected_client = next(
+                (
+                    client
+                    for client in clients
+                    if str(client.get("id") or "") == selected_client_id
+                ),
+                None,
+            )
+
+            if selected_client:
+                if st.session_state["selected_client_last_id"] != selected_client_id:
+                    st.session_state["selected_client_last_id"] = selected_client_id
+                    st.session_state["session_filter_from"] = date.today() - timedelta(days=7)
+                    st.session_state["session_filter_to"] = date.today()
+                    st.session_state["client_sessions"] = []
+                    st.session_state["client_sessions_error"] = ""
+                    with st.spinner("Loading sessions for the selected client..."):
+                        load_sessions_for_selected_client()
+                render_client_detail(selected_client)
+        else:
+            st.info("No clients are currently cached.")
 
 
 def main() -> None:
@@ -1767,6 +1912,7 @@ def main() -> None:
         layout="wide",
     )
 
+    render_app_styles()
     ensure_session_defaults()
 
     if st.session_state["auth_verified"] and st.session_state["api_valid"]:
