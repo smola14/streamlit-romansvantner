@@ -33,6 +33,7 @@ BLUE_HEX = "#303674"
 FV_NORMS_PATH = Path(__file__).resolve().parent / "data" / "fv_norms.xlsx"
 FV_NORM_SCATTER_PATH = Path(__file__).resolve().parent / "data" / "fv_norm_scatter.json"
 RS_LOGO_PATH = Path(__file__).resolve().parent / "rs-logo.png"
+SPLIT_1505_IMAGE_PATH = Path(__file__).resolve().parent / "1505.png"
 UPLOADED_LOGOS_DIR = Path(__file__).resolve().parent / "uploaded_logos"
 UPLOADED_PLAYER_PHOTOS_DIR = Path(__file__).resolve().parent / "uploaded_player_photos"
 MAX_LOGO_BYTES = 2 * 1024 * 1024
@@ -702,8 +703,44 @@ def build_derived_split_runs_from_training_data(set_payloads: list[dict[str, Any
             total_distance = sum(float(motion.get("totalDistance") or 0) for motion in motions)
             total_time = sum(float(motion.get("totalTime") or 0) for motion in motions)
             top_speed = max((float(motion.get("topSpeed") or 0) for motion in motions), default=0.0)
+            max_acceleration = max(
+                (
+                    float((motion.get("accelDecelStats") or {}).get("accelerationMax") or 0)
+                    for motion in motions
+                ),
+                default=0.0,
+            )
+            max_deceleration = max(
+                (
+                    float((motion.get("accelDecelStats") or {}).get("decelerationMax") or 0)
+                    for motion in motions
+                ),
+                default=0.0,
+            )
+            deceleration_time = sum(
+                float((motion.get("accelDecelStats") or {}).get("decelerationTime") or 0)
+                for motion in motions
+            )
             first_resistance = (motions[0].get("resistanceValues") or {}) if motions else {}
             load = first_resistance.get("concentricLoad")
+            motion_details = []
+            cumulative_time = 0.0
+            for motion in motions:
+                motion_time = float(motion.get("totalTime") or 0)
+                avg_speed = float(((motion.get("averageValues") or {}).get("speed")) or 0)
+                top_motion_speed = float(motion.get("topSpeed") or 0)
+                phase_name = str(motion.get("phaseName") or "")
+                motion_details.append(
+                    {
+                        "phaseName": phase_name,
+                        "duration": motion_time,
+                        "avgSpeed": avg_speed,
+                        "topSpeed": top_motion_speed,
+                        "startTime": cumulative_time,
+                        "endTime": cumulative_time + motion_time,
+                    }
+                )
+                cumulative_time += motion_time
 
             derived_runs.append(
                 {
@@ -712,6 +749,10 @@ def build_derived_split_runs_from_training_data(set_payloads: list[dict[str, Any
                     "time": total_time,
                     "topSpeed": top_speed,
                     "load": load,
+                    "maxAcceleration": max_acceleration,
+                    "maxDeceleration": max_deceleration,
+                    "decelerationTime": deceleration_time,
+                    "motions": motion_details,
                 }
             )
 
@@ -1151,6 +1192,8 @@ def ensure_session_defaults() -> None:
     st.session_state.setdefault("client_sessions_loaded_for", "")
     st.session_state.setdefault("session_filter_from", date.today() - timedelta(days=7))
     st.session_state.setdefault("session_filter_to", date.today())
+    st.session_state.setdefault("session_filter_last_from", date.today() - timedelta(days=7))
+    st.session_state.setdefault("session_filter_last_to", date.today())
     st.session_state.setdefault("selected_session_id", "")
     st.session_state.setdefault("session_detail", None)
     st.session_state.setdefault("session_detail_error", "")
@@ -1213,6 +1256,8 @@ def reset_client_cache_state() -> None:
     st.session_state["client_sessions_loaded_for"] = ""
     st.session_state["session_filter_from"] = date.today() - timedelta(days=7)
     st.session_state["session_filter_to"] = date.today()
+    st.session_state["session_filter_last_from"] = date.today() - timedelta(days=7)
+    st.session_state["session_filter_last_to"] = date.today()
     st.session_state["selected_session_id"] = ""
     st.session_state["session_detail"] = None
     st.session_state["session_detail_error"] = ""
@@ -1626,6 +1671,143 @@ def make_normative_fv_profile(
     buf.seek(0)
     plt.close(fig)
     return buf
+
+
+def make_split_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
+    motions = run.get("motions") or []
+    fig, ax = plt.subplots(figsize=(5.8, 3.8))
+
+    if motions:
+        x_points = [0.0]
+        y_points = [float(motions[0].get("avgSpeed") or 0)]
+        for motion in motions:
+            start_time = float(motion.get("startTime") or 0)
+            end_time = float(motion.get("endTime") or 0)
+            avg_speed = float(motion.get("avgSpeed") or 0)
+            x_points.extend([start_time, end_time])
+            y_points.extend([avg_speed, avg_speed])
+
+        ax.plot(x_points, y_points, color=BLUE_HEX, linewidth=2.5)
+
+        for motion in motions:
+            mid_time = (float(motion.get("startTime") or 0) + float(motion.get("endTime") or 0)) / 2
+            phase_name = str(motion.get("phaseName") or "")
+            if phase_name:
+                ax.text(
+                    mid_time,
+                    float(motion.get("avgSpeed") or 0) + 0.15,
+                    phase_name,
+                    fontsize=8,
+                    color="#6b7280",
+                    ha="center",
+                )
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_xlabel("Čas [s]")
+    ax.set_ylabel("Rýchlosť [m/s]")
+    ax.set_title("Rýchlosť počas runu", fontsize=10)
+    ax.grid(True, linestyle="--", alpha=0.18)
+
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
+
+def build_non_normative_split_pdf(
+    run: dict[str, Any],
+    player_name: str,
+    logo_bytes: bytes | None,
+    player_photo_bytes: bytes | None,
+) -> bytes:
+    chart_buf = make_split_speed_time_plot(run)
+    pdf = FPDF("L", "mm", "A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    font_family = configure_pdf_font(pdf)
+
+    left_x = 14
+    left_w = 126
+    right_x = 154
+    right_w = 129
+    top_y = 18
+    subtitle_y = 29
+    chart_y = 54
+    chart_w = left_w
+    scheme_y = 137
+    scheme_w = 96
+    scheme_x = left_x + (left_w - scheme_w) / 2
+    photo_w = 54
+    photo_x = right_x + 4
+    photo_y = 16
+    logo_w = 30
+    logo_x = right_x + right_w - logo_w
+    logo_y = 16
+    metrics_y = 92
+    rs_logo_w = 36
+    rs_logo_x = pdf.w - rs_logo_w - 10
+    rs_logo_y = pdf.h - 15
+
+    pdf.set_text_color(*BLACK_RGB)
+    pdf.set_font(font_family, "", 24)
+    pdf.set_xy(left_x, top_y)
+    pdf.cell(0, 10, player_name, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_text_color(128, 128, 128)
+    pdf.set_font(font_family, "", 12)
+    pdf.set_xy(left_x, subtitle_y)
+    pdf.cell(0, 10, "Deceleračný profil 15-0-5", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.image(chart_buf, x=left_x, y=chart_y, w=chart_w)
+    if SPLIT_1505_IMAGE_PATH.is_file():
+        pdf.image(str(SPLIT_1505_IMAGE_PATH), x=scheme_x, y=scheme_y, w=scheme_w)
+
+    if player_photo_bytes:
+        pdf.image(io.BytesIO(player_photo_bytes), x=photo_x, y=photo_y, w=photo_w, h=photo_w, keep_aspect_ratio=True)
+    if logo_bytes:
+        pdf.image(io.BytesIO(logo_bytes), x=logo_x, y=logo_y, w=logo_w)
+
+    cell_w = 24
+    cell_h = 12
+    cell_h_sub = 7
+    row_gap = 18
+    col_gap = 28
+    metrics_block_w = cell_w * 3 + 2 * (col_gap - cell_w)
+    data_x = right_x + (right_w - metrics_block_w) / 2
+
+    total_time = float(run.get("time") or 0)
+    top_speed_ms = float(run.get("topSpeed") or 0)
+    max_acceleration = float(run.get("maxAcceleration") or 0)
+    max_deceleration = float(run.get("maxDeceleration") or 0)
+    deceleration_time = float(run.get("decelerationTime") or 0)
+
+    pdf.set_fill_color(*BLUE_RGB)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font(font_family, "", 12)
+
+    rounded_corner_cell(pdf, data_x, metrics_y, cell_w, cell_h, format_decimal(total_time))
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y, cell_w, cell_h, format_decimal(top_speed_ms))
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y, cell_w, cell_h, format_decimal(top_speed_ms * 3.6))
+    rounded_corner_cell(pdf, data_x, metrics_y + row_gap, cell_w, cell_h, format_decimal(max_acceleration))
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap, cell_w, cell_h, format_decimal(max_deceleration))
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + row_gap, cell_w, cell_h, format_decimal(deceleration_time))
+
+    pdf.set_font(font_family, "", 8)
+    pdf.set_text_color(220, 220, 220)
+    rounded_corner_cell(pdf, data_x, metrics_y + 9, cell_w, cell_h_sub, "Celkový čas [s]")
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + 9, cell_w, cell_h_sub, "Max rýchlosť [m/s]")
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + 9, cell_w, cell_h_sub, "Max rýchlosť [km/h]")
+    rounded_corner_cell(pdf, data_x, metrics_y + row_gap + 9, cell_w, cell_h_sub, "Max akcelerácia")
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, "Max decelerácia")
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, "Čas decelerácie")
+
+    if RS_LOGO_PATH.is_file():
+        pdf.image(str(RS_LOGO_PATH), x=rs_logo_x, y=rs_logo_y, w=rs_logo_w)
+
+    return bytes(pdf.output(dest="S"))
 
 
 def build_non_normative_fv_pdf(
@@ -2043,6 +2225,55 @@ def render_fv_export_dialog(
         )
 
 
+@st.dialog("15-0-5 PDF export")
+def render_split_export_dialog(
+    exercise: dict[str, Any],
+    payload: dict[str, Any],
+    client: dict[str, Any],
+) -> None:
+    derived_runs = payload.get("_derived_runs") or []
+    if not derived_runs:
+        st.info("No 15-0-5 runs are available for PDF export.")
+        return
+
+    run_options = {
+        f"Run {index + 1} | Time {format_decimal(run.get('time'), 3)} | Top speed {format_decimal(run.get('topSpeed'))}": run
+        for index, run in enumerate(derived_runs)
+    }
+
+    st.caption("Choose the run and optional assets for the export.")
+    selected_run_label = st.selectbox(
+        "Run",
+        options=list(run_options.keys()),
+        key=f"split_run_select_{exercise.get('id')}",
+    )
+    selected_run = run_options[selected_run_label]
+
+    logo_bytes = render_logo_library_selector(f"split_logo_{exercise.get('id')}")
+    export_name = format_optional_value(client.get("displayName"))
+    player_client_id = str(client.get("id") or "")
+    player_photo_bytes = render_player_photo_selector(
+        f"split_player_photo_{exercise.get('id')}",
+        player_client_id,
+    ) if player_client_id else None
+
+    pdf_bytes = build_non_normative_split_pdf(
+        selected_run,
+        export_name,
+        logo_bytes,
+        player_photo_bytes,
+    )
+    file_name = f"{safe_filename(export_name)}_{safe_filename(str(exercise.get('id')))}_1505_profile.pdf"
+    st.download_button(
+        "Download 15-0-5 PDF",
+        data=pdf_bytes,
+        file_name=file_name,
+        mime="application/pdf",
+        key=f"split_pdf_download_{exercise.get('id')}",
+        width="stretch",
+    )
+
+
 def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client: dict[str, Any]) -> None:
     reports = payload.get("reports") or []
     failed_reports = payload.get("failedReports") or []
@@ -2079,9 +2310,8 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
         st.info("No FV runs were returned for this exercise.")
 
 
-def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> None:
+def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any], client: dict[str, Any]) -> None:
     reports = payload.get("reports") or []
-    debug_fetches = payload.get("_debug_fetches") or []
     derived_runs = payload.get("_derived_runs") or []
 
     st.markdown("### 15-0-5 split profile")
@@ -2091,6 +2321,14 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
     top_col1.metric("Runs", displayed_run_count)
     top_col2.metric("Split length", format_decimal(reports[0].get("splitLength")) if reports else "5.00")
     top_col3.metric("Units", "meters" if (reports or derived_runs) else "-")
+
+    if derived_runs:
+        if st.button(
+            "Open 15-0-5 PDF export",
+            key=f"split_export_open_top_{exercise.get('id')}",
+            width="stretch",
+        ):
+            render_split_export_dialog(exercise, payload, client)
 
     split_rows: list[dict[str, Any]] = []
     for report_index, report in enumerate(reports):
@@ -2123,12 +2361,6 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
         st.dataframe(derived_rows, width="stretch", hide_index=True)
     else:
         st.info("No split rows were returned for this exercise.")
-
-    if debug_fetches:
-        st.markdown("#### Split debug")
-        st.json(sanitize_for_debug(debug_fetches))
-    st.markdown("#### Split payload")
-    st.json(sanitize_for_debug(payload))
 
 
 def render_session_detail_content(
@@ -2199,7 +2431,7 @@ def render_session_detail_content(
                         load_exercise_report(api_key, str(exercise.get("id") or ""), "split", exercise)
                     payload = st.session_state["exercise_report_cache"].get(cache_key)
                 if payload:
-                    render_split_profile(exercise, payload)
+                    render_split_profile(exercise, payload, client)
     else:
         st.info("No exercises were returned for this session.")
 
@@ -2277,12 +2509,18 @@ def render_client_detail(client: dict[str, Any]) -> None:
     filter_col1.date_input("From", key="session_filter_from")
     filter_col2.date_input("To", key="session_filter_to")
     reload_sessions = filter_col3.button("Refresh sessions", width="stretch")
+    filters_changed = (
+        st.session_state["session_filter_from"] != st.session_state.get("session_filter_last_from")
+        or st.session_state["session_filter_to"] != st.session_state.get("session_filter_last_to")
+    )
 
     if st.session_state["session_filter_from"] > st.session_state["session_filter_to"]:
         st.error("The start date must be earlier than or equal to the end date.")
         return
 
-    if reload_sessions:
+    if reload_sessions or filters_changed:
+        st.session_state["session_filter_last_from"] = st.session_state["session_filter_from"]
+        st.session_state["session_filter_last_to"] = st.session_state["session_filter_to"]
         with st.spinner("Loading sessions for the selected client..."):
             load_sessions_for_selected_client()
 
@@ -2547,6 +2785,8 @@ def render_dashboard() -> None:
                     st.session_state["selected_client_last_id"] = selected_client_id
                     st.session_state["session_filter_from"] = date.today() - timedelta(days=7)
                     st.session_state["session_filter_to"] = date.today()
+                    st.session_state["session_filter_last_from"] = st.session_state["session_filter_from"]
+                    st.session_state["session_filter_last_to"] = st.session_state["session_filter_to"]
                     st.session_state["client_sessions"] = []
                     st.session_state["client_sessions_error"] = ""
                     with st.spinner("Loading sessions for the selected client..."):
