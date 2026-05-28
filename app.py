@@ -30,6 +30,7 @@ RED_RGB = (251, 51, 49)
 BLUE_HEX = "#303674"
 FV_NORMS_PATH = Path(__file__).resolve().parent / "data" / "fv_norms.xlsx"
 FV_NORM_SCATTER_PATH = Path(__file__).resolve().parent / "data" / "fv_norm_scatter.json"
+RS_LOGO_PATH = Path(__file__).resolve().parent / "rs-logo.png"
 UPLOADED_LOGOS_DIR = Path(__file__).resolve().parent / "uploaded_logos"
 UPLOADED_PLAYER_PHOTOS_DIR = Path(__file__).resolve().parent / "uploaded_player_photos"
 MAX_LOGO_BYTES = 2 * 1024 * 1024
@@ -88,53 +89,53 @@ PDF_TEXT = {
         ],
     },
     "Slovak": {
-        "fv_title": "Silovo-rychlostny profil",
-        "recommendation": "Odporucanie",
-        "notes": "Poznamka",
+        "fv_title": "Silovo-rýchlostný profil",
+        "recommendation": "Odporúčanie",
+        "notes": "Poznámka",
         "f0_status": "F0 vs norma",
         "v0_status": "V0 vs norma",
         "within": "V norme",
         "below": "Pod normou",
         "above": "Nad normou",
         "no_norm": "Bez normy",
-        "q1_result": "Rychlejsia akceleracia / vyssia rychlost",
-        "q2_result": "Rychlejsia akceleracia / nizsia rychlost",
-        "q3_result": "Pomalsia akceleracia / nizsia rychlost",
-        "q4_result": "Pomalsia akceleracia / vyssia rychlost",
+        "q1_result": "Rýchlejšia akcelerácia / vyššia rýchlosť",
+        "q2_result": "Rýchlejšia akcelerácia / nižšia rýchlosť",
+        "q3_result": "Pomalšia akcelerácia / nižšia rýchlosť",
+        "q4_result": "Pomalšia akcelerácia / vyššia rýchlosť",
         "q1_recs": [
-            "Akceleracia/praca na rychlosti (<7 s)",
-            "Sprintersky trening s odporom (25-50% pokles rychlosti; 10-20 m)",
-            "Letme sprinty",
-            "Sprintersky trening s asistenciou",
+            "Akcelerácia/práca na rýchlosti (<7 s)",
+            "Šprintérsky tréning s odporom (25-50% pokles rýchlosti; 10-20 m)",
+            "Letmé šprinty",
+            "Šprintérsky tréning s asistenciou",
             "Speed bounding",
-            "Zlepsenie izometrickej sily hamstringov",
+            "Zlepšenie izometrickej sily hamstringov",
         ],
         "q2_recs": [
-            "Akceleracia/praca na rychlosti (<7 s)",
-            "Sprintersky trening s odporom (25-50% pokles rychlosti; 10-20 m)",
-            "Letme sprinty",
-            "Sprintersky trening s asistenciou",
-            "Zlepsenie cyklu natiahnutie-skratenie (SSC)",
-            "Zlepsenie reaktivnej sily",
-            "Zlepsenie sily spojivovych tkaniv",
+            "Akcelerácia/práca na rýchlosti (<7 s)",
+            "Šprintérsky tréning s odporom (25-50% pokles rýchlosti; 10-20 m)",
+            "Letmé šprinty",
+            "Šprintérsky tréning s asistenciou",
+            "Zlepšenie cyklu natiahnutie-skrátenie (SSC)",
+            "Zlepšenie reaktívnej sily",
+            "Zlepšenie sily spojivových tkanív",
         ],
         "q3_recs": [
-            "Sprintersky trening s odporom (50-75% pokles rychlosti; 10 m)",
-            "Letme sprinty",
-            "Zlepsenie cyklu natiahnutia-skratenia (SSC)",
-            "Zlepsenie sily extenzorov bedroveho klbu",
-            "Zlepsenie sily soleusu a gastrocnemiusu",
-            "Zlepsenie absolutnej/relativnej sily",
-            "Zlepsenie reaktivnej sily",
-            "Zlepsenie rychlosti produkcie sily (RFD)",
+            "Šprintérsky tréning s odporom (50-75% pokles rýchlosti; 10 m)",
+            "Letmé šprinty",
+            "Zlepšenie cyklu natiahnutia-skrátenia (SSC)",
+            "Zlepšenie sily extenzorov bedrového kĺbu",
+            "Zlepšenie sily soleusu a gastrocnemiusu",
+            "Zlepšenie absolútnej/relatívnej sily",
+            "Zlepšenie reaktívnej sily",
+            "Zlepšenie rýchlosti produkcie sily (RFD)",
         ],
         "q4_recs": [
-            "Akceleracia/praca na rychlosti (<7 s)",
-            "Sprintersky trening s odporom (50-75% pokles rychlosti; 10 m)",
-            "Zlepsenie sily extenzorov bedroveho klbu",
-            "Zlepsenie absolutnej/relativnej sily",
-            "Zlepsenie rychlosti produkcie sily (RFD)",
-            "Zlepsenie sily spojivovych tkaniv",
+            "Akcelerácia/práca na rýchlosti (<7 s)",
+            "Šprintérsky tréning s odporom (50-75% pokles rýchlosti; 10 m)",
+            "Zlepšenie sily extenzorov bedrového kĺbu",
+            "Zlepšenie absolútnej/relatívnej sily",
+            "Zlepšenie rýchlosti produkcie sily (RFD)",
+            "Zlepšenie sily spojivových tkanív",
         ],
     },
 }
@@ -1006,51 +1007,29 @@ def make_norm_scatter_plot(report: dict[str, Any], norm_row: dict[str, Any], sca
     return buf
 
 
-def make_normative_fv_charts(
+def make_normative_fv_profile(
     report: dict[str, Any],
     norm_row: dict[str, Any],
-    scatter_entry: dict[str, Any],
 ) -> io.BytesIO:
-    points = scatter_entry.get("points") or []
-    x_values = [float(point["v0"]) for point in points]
-    y_values = [float(point["f0"]) for point in points]
     player_v0 = float(report["v0"])
     player_f0 = float(report["f0"])
-    v0_median = float(norm_row["v0_median"])
-    f0_median = float(norm_row["f0_median"])
-
-    all_x = [*x_values, player_v0]
-    all_y = [*y_values, player_f0]
-    x_span = max(all_x) - min(all_x) if all_x else 1.0
-    y_span = max(all_y) - min(all_y) if all_y else 1.0
+    bbox = dict(boxstyle="round", edgecolor="none", facecolor=BLUE_HEX)
+    upper_x = [0, float(norm_row["v0_max"])]
+    upper_y = [float(norm_row["f0_max"]), 0]
+    lower_x = [0, float(norm_row["v0_min"])]
+    lower_y = [float(norm_row["f0_min"]), 0]
+    x_span = max(upper_x[1], player_v0) - min(lower_x[1], 0)
+    y_span = max(upper_y[0], player_f0) - min(lower_y[0], 0)
     x_pad = max(x_span * 0.08, 0.15)
     y_pad = max(y_span * 0.08, 0.15)
 
-    bbox = dict(boxstyle="round", edgecolor="none", facecolor=BLUE_HEX)
-
-    fig, (ax_scatter, ax_line) = plt.subplots(2, 1, figsize=(5.8, 8.2))
-
-    if x_values and y_values:
-        ax_scatter.scatter(x_values, y_values, color="#d0d4db", s=28, alpha=0.9, edgecolors="none")
-    ax_scatter.scatter([player_v0], [player_f0], color="#FB3331", s=78, zorder=3)
-    ax_scatter.axhline(f0_median, color="#252423", linestyle="--", linewidth=1.2)
-    ax_scatter.axvline(v0_median, color="#252423", linestyle="--", linewidth=1.2)
-    ax_scatter.text(v0_median + x_pad * 0.15, max(all_y) + y_pad * 0.1, "Q1", fontsize=9, color="#252423")
-    ax_scatter.text(min(all_x) - x_pad * 0.1, max(all_y) + y_pad * 0.1, "Q2", fontsize=9, color="#252423")
-    ax_scatter.text(min(all_x) - x_pad * 0.1, min(all_y) - y_pad * 0.35, "Q3", fontsize=9, color="#252423")
-    ax_scatter.text(v0_median + x_pad * 0.15, min(all_y) - y_pad * 0.35, "Q4", fontsize=9, color="#252423")
-    ax_scatter.set_xlim(min(all_x) - x_pad, max(all_x) + x_pad)
-    ax_scatter.set_ylim(min(all_y) - y_pad, max(all_y) + y_pad)
-    ax_scatter.set_xlabel("V0 [m/s]")
-    ax_scatter.set_ylabel("F0 [N/kg]")
-    ax_scatter.set_title(f"Cohort scatter | {norm_row.get('category')}", fontsize=10)
-    ax_scatter.spines["top"].set_visible(False)
-    ax_scatter.spines["right"].set_visible(False)
-    ax_scatter.grid(True, linestyle="--", alpha=0.18)
-
     x_player = [0, player_v0]
     y_player = [player_f0, 0]
+
+    fig, ax_line = plt.subplots(figsize=(5.8, 3.8))
+    ax_line.plot(upper_x, upper_y, label="Upper reference", linestyle="--", color="#00C060", linewidth=2.0)
     ax_line.plot(x_player, y_player, label="Player", color=BLUE_HEX, linewidth=2.5)
+    ax_line.plot(lower_x, lower_y, label="Lower reference", linestyle="--", color="#FB3331", linewidth=2.0)
     ax_line.annotate(
         str(round(player_v0, 2)),
         (player_v0, 0),
@@ -1076,11 +1055,13 @@ def make_normative_fv_charts(
     ax_line.set_xlabel("V0 [m/s]")
     ax_line.set_ylabel("F0 [N/kg]")
     ax_line.set_title("Player FV profile", fontsize=10)
+    ax_line.set_xlim(-x_pad * 0.2, max(upper_x[1], player_v0) + x_pad)
+    ax_line.set_ylim(-y_pad * 0.2, max(upper_y[0], player_f0) + y_pad)
     ax_line.legend(loc="upper right", frameon=False)
     ax_line.margins(x=0.05, y=0.05)
 
     buf = io.BytesIO()
-    fig.tight_layout(h_pad=1.3)
+    fig.tight_layout()
     fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     buf.seek(0)
     plt.close(fig)
@@ -1169,7 +1150,7 @@ def load_fv_norms() -> tuple[list[dict[str, Any]], str | None]:
         return [], "The norms workbook is empty."
 
     headers = [str(cell).strip() if cell is not None else "" for cell in rows[0]]
-    required = ["category", "f0_median", "v0_median"]
+    required = ["category", "f0_min", "f0_max", "v0_min", "v0_max", "f0_median", "v0_median"]
     missing = [name for name in required if name not in headers]
     if missing:
         return [], f"The norms workbook is missing columns: {', '.join(missing)}"
@@ -1233,60 +1214,76 @@ def build_normative_fv_pdf(
     language: str,
 ) -> bytes:
     texts = PDF_TEXT[language]
-    fv_buf = (
-        make_normative_fv_charts(report, norm_row, scatter_entry)
+    fv_buf = make_normative_fv_profile(report, norm_row)
+    scatter_buf = (
+        make_norm_scatter_plot(report, norm_row, scatter_entry)
         if scatter_entry
-        else make_fv_profile_player_only(report)
+        else None
     )
     pdf = FPDF("L", "mm", "A4")
     pdf.set_auto_page_break(auto=False)
     pdf.add_page()
     font_family = configure_pdf_font(pdf)
 
-    if logo_bytes:
-        pdf.image(io.BytesIO(logo_bytes), x=10, y=12, w=25)
-
-    left_x = 16
-    left_w = 102
-    right_x = 132
-    chart_y = 54
-    chart_w = left_w
-    photo_x = 238
-    photo_y = 14
-    photo_w = 34
+    left_x = 14
+    left_w = 126
+    right_x = 154
+    right_w = 129
+    logo_x = left_x
+    logo_y = 16
+    logo_w = 24
+    has_logo = bool(logo_bytes)
+    identity_x = left_x + (logo_w + 8 if has_logo else 0)
     top_y = 18
-    subtitle_y = 32
-    badge_y = 44
-    metrics_y = 68
-    rec_title_y = 136
-    rec_text_y = 144
+    subtitle_y = 29
+    badge_y = 39
+    fv_chart_y = 56
+    fv_chart_w = left_w
+    metrics_y = 148
+    metric_gap_x = 26
+    rec_title_y = 170
+    rec_text_y = 178
+    photo_w = 46
+    photo_x = right_x + (right_w - photo_w) / 2
+    photo_y = 14
+    scatter_y = 66
+    scatter_w = 118
+    scatter_x = right_x + (right_w - scatter_w) / 2
+    rs_logo_w = 36
+    rs_logo_x = pdf.w - rs_logo_w - 10
+    rs_logo_y = pdf.h - 15
+
+    if logo_bytes:
+        pdf.image(io.BytesIO(logo_bytes), x=logo_x, y=logo_y, w=logo_w)
 
     pdf.set_text_color(*BLACK_RGB)
-    pdf.set_font(font_family, "", 27)
-    pdf.set_xy(45, top_y)
+    pdf.set_font(font_family, "", 24)
+    pdf.set_xy(identity_x, top_y)
     pdf.cell(0, 10, player_name, new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_text_color(128, 128, 128)
-    pdf.set_font(font_family, "", 13)
-    pdf.set_xy(45, subtitle_y)
+    pdf.set_font(font_family, "", 12)
+    pdf.set_xy(identity_x, subtitle_y)
     pdf.cell(0, 10, f"{texts['fv_title']} | Norm: {norm_row.get('category')}", new_x="LMARGIN", new_y="NEXT")
 
     quadrant = get_norm_quadrant(report, norm_row)
     quadrant_result = get_quadrant_result(quadrant, language)
     recommendations = get_quadrant_recommendations(quadrant, language)
 
-    badge_x = 45
+    badge_x = identity_x
     pdf.set_font(font_family, "", 12)
     pdf.set_fill_color(*get_quadrant_badge_fill(quadrant))
     pdf.set_text_color(255, 255, 255)
     rounded_corner_cell(pdf, badge_x, badge_y, 14, 11, quadrant)
 
     pdf.set_fill_color(*get_quadrant_result_fill(quadrant))
-    rounded_corner_cell(pdf, badge_x + 16, badge_y, 96, 11, quadrant_result)
+    rounded_corner_cell(pdf, badge_x + 16, badge_y, min(100, left_w - 16), 11, quadrant_result)
 
-    pdf.image(fv_buf, x=left_x, y=chart_y, w=chart_w)
+    pdf.image(fv_buf, x=left_x, y=fv_chart_y, w=fv_chart_w)
     if player_photo_bytes:
         pdf.image(io.BytesIO(player_photo_bytes), x=photo_x, y=photo_y, w=photo_w, h=photo_w, keep_aspect_ratio=True)
+    if scatter_buf:
+        pdf.image(scatter_buf, x=scatter_x, y=scatter_y, w=scatter_w)
 
     f0 = float(report["f0"])
     v0 = float(report["v0"])
@@ -1294,7 +1291,7 @@ def build_normative_fv_pdf(
     drf = float(report.get("ratioOfForceDecrease") or 0)
     rfmax = float(report.get("ratioOfForceMax") or 0)
 
-    data_x = right_x
+    data_x = left_x + 8
     data_y = metrics_y
     y_second_row = 18
     cell_w = 22
@@ -1329,6 +1326,9 @@ def build_normative_fv_pdf(
     for item in recommendations:
         pdf.text(right_x, y_coordinate, "* " + item)
         y_coordinate += 8
+
+    if RS_LOGO_PATH.is_file():
+        pdf.image(str(RS_LOGO_PATH), x=rs_logo_x, y=rs_logo_y, w=rs_logo_w)
 
     return bytes(pdf.output(dest="S"))
 
