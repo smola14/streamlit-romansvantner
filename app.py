@@ -338,6 +338,12 @@ def render_app_styles() -> None:
             font-size: 0.92rem;
             margin: 0.18rem 0 0;
         }
+        .session-row-inline {
+            display: flex;
+            align-items: baseline;
+            gap: 0.65rem;
+            flex-wrap: wrap;
+        }
         div[data-testid="stButton"] > button,
         div[data-testid="stDownloadButton"] > button,
         div[data-testid="stFormSubmitButton"] > button {
@@ -1686,11 +1692,7 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
     runner_info = reports[0].get("runnerInfo") if reports else None
 
     st.markdown("### Running (LR) force-velocity profile")
-
-    top_col1, top_col2, top_col3 = st.columns(3)
-    top_col1.metric("Valid runs", len(reports))
-    top_col2.metric("Failed runs", len(failed_reports))
-    top_col3.metric("Runner", format_optional_value((runner_info or {}).get("displayName")))
+    st.caption(f"Valid runs: {len(reports)} | Failed runs: {len(failed_reports)}")
 
     if reports:
         summary_rows = [
@@ -1713,10 +1715,6 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
             render_fv_export_dialog(exercise, reports, runner_info, client)
     else:
         st.info("No FV runs were returned for this exercise.")
-
-    if failed_reports:
-        st.caption("Failed FV reports")
-        st.dataframe(failed_reports, use_container_width=True, hide_index=True)
 
     with st.expander("Technical details"):
         st.json(payload)
@@ -1766,11 +1764,6 @@ def render_session_detail_content(
 
     st.subheader("Selected session")
     st.caption("Session overview and exercise-specific reports.")
-
-    detail_col1, detail_col2, detail_col3 = st.columns(3)
-    detail_col1.metric("Athlete", get_client_display_name(session_detail.get("clientId"), client_lookup))
-    detail_col2.metric("Session time", session_time)
-    detail_col3.metric("Exercises", len(exercises))
 
     if exercises:
         exercise_rows = [
@@ -1848,8 +1841,10 @@ def render_session_selection_block(
             st.markdown(
                 f"""
                 <div class="session-row">
-                  <p class="session-row-title">{session_time}</p>
-                  <p class="session-row-subtitle">{athlete_name}</p>
+                  <div class="session-row-inline">
+                    <p class="session-row-title">{session_time}</p>
+                    <p class="session-row-subtitle">{athlete_name}</p>
+                  </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
