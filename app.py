@@ -1269,15 +1269,15 @@ def render_fv_export_dialog(
             )
             return
 
-            pdf_bytes = build_normative_fv_pdf(
-                selected_report,
-                export_name,
-                logo_bytes,
-                player_photo_bytes,
-                selected_norm,
-                scatter_entry,
-                export_language,
-            )
+        pdf_bytes = build_normative_fv_pdf(
+            selected_report,
+            export_name,
+            logo_bytes,
+            player_photo_bytes,
+            selected_norm,
+            scatter_entry,
+            export_language,
+        )
         file_name = (
             f"{safe_filename(export_name)}_{safe_filename(selected_norm_category)}_"
             f"{safe_filename(str(exercise.get('id')))}_fv_normative.pdf"
