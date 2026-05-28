@@ -671,6 +671,35 @@ def build_split_collection_from_reports(
     }
 
 
+def build_derived_split_runs_from_training_data(set_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    derived_runs: list[dict[str, Any]] = []
+
+    for set_payload in set_payloads:
+        motion_groups = set_payload.get("motionGroups") or []
+        for motion_group in motion_groups:
+            motions = motion_group.get("motions") or []
+            if not motions:
+                continue
+
+            total_distance = sum(float(motion.get("totalDistance") or 0) for motion in motions)
+            total_time = sum(float(motion.get("totalTime") or 0) for motion in motions)
+            top_speed = max((float(motion.get("topSpeed") or 0) for motion in motions), default=0.0)
+            first_resistance = (motions[0].get("resistanceValues") or {}) if motions else {}
+            load = first_resistance.get("concentricLoad")
+
+            derived_runs.append(
+                {
+                    "motionGroupId": str(motion_group.get("id") or ""),
+                    "distance": total_distance,
+                    "time": total_time,
+                    "topSpeed": top_speed,
+                    "load": load,
+                }
+            )
+
+    return derived_runs
+
+
 def append_split_debug(
     debug_steps: list[dict[str, Any]],
     step: str,
@@ -707,6 +736,7 @@ def load_split_payload_for_exercise(
     exercise: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     debug_steps: list[dict[str, Any]] = []
+    training_set_payloads: list[dict[str, Any]] = []
     exercise_payload, error = fetch_split_exercise(api_key, exercise_id)
     append_split_debug(
         debug_steps,
@@ -739,6 +769,8 @@ def load_split_payload_for_exercise(
         if set_training_error:
             set_errors.append(set_training_error)
             continue
+        if set_training_payload:
+            training_set_payloads.append(set_training_payload)
 
         motion_groups = (set_training_payload or {}).get("motionGroups") or []
         run_ids = [
@@ -780,14 +812,17 @@ def load_split_payload_for_exercise(
 
     merged_payload = merge_split_payloads(set_payloads)
     merged_payload["_debug_fetches"] = debug_steps
+    merged_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
     if merged_payload.get("reports"):
         return merged_payload, None
 
     if set_errors:
         exercise_payload["_debug_fetches"] = debug_steps
+        exercise_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
         return exercise_payload, set_errors[0]
 
     exercise_payload["_debug_fetches"] = debug_steps
+    exercise_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
     return exercise_payload, None
 
 
@@ -1965,13 +2000,15 @@ def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client:
 def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> None:
     reports = payload.get("reports") or []
     debug_fetches = payload.get("_debug_fetches") or []
+    derived_runs = payload.get("_derived_runs") or []
 
     st.markdown("### 15-0-5 split profile")
 
     top_col1, top_col2, top_col3 = st.columns(3)
-    top_col1.metric("Runs", len(reports))
+    displayed_run_count = len(reports) if reports else len(derived_runs)
+    top_col1.metric("Runs", displayed_run_count)
     top_col2.metric("Split length", format_decimal(reports[0].get("splitLength")) if reports else "5.00")
-    top_col3.metric("Units", "meters" if reports and not reports[0].get("isYards") else ("yards" if reports else "-"))
+    top_col3.metric("Units", "meters" if (reports or derived_runs) else "-")
 
     split_rows: list[dict[str, Any]] = []
     for report_index, report in enumerate(reports):
@@ -1990,6 +2027,18 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
 
     if split_rows:
         st.dataframe(split_rows, width="stretch", hide_index=True)
+    elif derived_runs:
+        derived_rows = [
+            {
+                "Run": index + 1,
+                "Distance": format_decimal(run.get("distance")),
+                "Time": format_decimal(run.get("time"), 3),
+                "Top speed": format_decimal(run.get("topSpeed")),
+                "Load": format_decimal(run.get("load")),
+            }
+            for index, run in enumerate(derived_runs)
+        ]
+        st.dataframe(derived_rows, width="stretch", hide_index=True)
     else:
         st.info("No split rows were returned for this exercise.")
 
