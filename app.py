@@ -540,7 +540,7 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     saved_logos = list_uploaded_logos()
     selected_logo_state_key = f"{key_prefix}_selected_logo_name"
     pending_logo_state_key = f"{key_prefix}_pending_saved_logo"
-    default_option = "No saved logo" if not saved_logos else saved_logos[0]
+    default_option = "No saved logo" if not saved_logos else "Choose logo"
 
     if selected_logo_state_key not in st.session_state:
         st.session_state[selected_logo_state_key] = default_option
@@ -549,7 +549,7 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     if pending_logo_name:
         st.session_state[selected_logo_state_key] = pending_logo_name
 
-    options = saved_logos or ["No saved logo"]
+    options = ["Choose logo", *saved_logos] if saved_logos else ["No saved logo"]
     if st.session_state[selected_logo_state_key] not in options:
         st.session_state[selected_logo_state_key] = default_option
 
@@ -580,7 +580,7 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     if uploaded_logo is not None and logo_is_valid:
         return uploaded_logo.getvalue()
 
-    if selected_logo != "No saved logo":
+    if selected_logo not in {"No saved logo", "Choose logo"}:
         return load_saved_logo_bytes(selected_logo)
 
     return None
@@ -1246,14 +1246,29 @@ def build_normative_fv_pdf(
     if logo_bytes:
         pdf.image(io.BytesIO(logo_bytes), x=10, y=12, w=25)
 
+    left_x = 16
+    left_w = 102
+    right_x = 132
+    chart_y = 54
+    chart_w = left_w
+    photo_x = 238
+    photo_y = 14
+    photo_w = 34
+    top_y = 18
+    subtitle_y = 32
+    badge_y = 44
+    metrics_y = 68
+    rec_title_y = 136
+    rec_text_y = 144
+
     pdf.set_text_color(*BLACK_RGB)
-    pdf.set_font(font_family, "", 30)
-    pdf.set_xy(45, 18)
+    pdf.set_font(font_family, "", 27)
+    pdf.set_xy(45, top_y)
     pdf.cell(0, 10, player_name, new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_text_color(128, 128, 128)
-    pdf.set_font(font_family, "", 14)
-    pdf.set_xy(45, 34)
+    pdf.set_font(font_family, "", 13)
+    pdf.set_xy(45, subtitle_y)
     pdf.cell(0, 10, f"{texts['fv_title']} | Norm: {norm_row.get('category')}", new_x="LMARGIN", new_y="NEXT")
 
     quadrant = get_norm_quadrant(report, norm_row)
@@ -1261,18 +1276,17 @@ def build_normative_fv_pdf(
     recommendations = get_quadrant_recommendations(quadrant, language)
 
     badge_x = 45
-    badge_y = 46
     pdf.set_font(font_family, "", 12)
     pdf.set_fill_color(*get_quadrant_badge_fill(quadrant))
     pdf.set_text_color(255, 255, 255)
     rounded_corner_cell(pdf, badge_x, badge_y, 14, 11, quadrant)
 
     pdf.set_fill_color(*get_quadrant_result_fill(quadrant))
-    rounded_corner_cell(pdf, badge_x + 16, badge_y, 92, 11, quadrant_result)
+    rounded_corner_cell(pdf, badge_x + 16, badge_y, 96, 11, quadrant_result)
 
-    pdf.image(fv_buf, x=20, y=55, w=125)
+    pdf.image(fv_buf, x=left_x, y=chart_y, w=chart_w)
     if player_photo_bytes:
-        pdf.image(io.BytesIO(player_photo_bytes), x=194, y=18, w=45, h=45, keep_aspect_ratio=True)
+        pdf.image(io.BytesIO(player_photo_bytes), x=photo_x, y=photo_y, w=photo_w, h=photo_w, keep_aspect_ratio=True)
 
     f0 = float(report["f0"])
     v0 = float(report["v0"])
@@ -1280,10 +1294,10 @@ def build_normative_fv_pdf(
     drf = float(report.get("ratioOfForceDecrease") or 0)
     rfmax = float(report.get("ratioOfForceMax") or 0)
 
-    data_x = 170
-    data_y = 70
+    data_x = right_x
+    data_y = metrics_y
     y_second_row = 18
-    cell_w = 28
+    cell_w = 22
     cell_h = 12
     cell_h_sub = 7
 
@@ -1292,28 +1306,28 @@ def build_normative_fv_pdf(
     pdf.set_font(font_family, "", 12)
 
     rounded_corner_cell(pdf, data_x, data_y, cell_w, cell_h, str(round(f0, 2)))
-    rounded_corner_cell(pdf, data_x + 32, data_y, cell_w, cell_h, str(round(v0, 2)))
-    rounded_corner_cell(pdf, data_x + 64, data_y, cell_w, cell_h, str(round(pmax, 2)))
+    rounded_corner_cell(pdf, data_x + 26, data_y, cell_w, cell_h, str(round(v0, 2)))
+    rounded_corner_cell(pdf, data_x + 52, data_y, cell_w, cell_h, str(round(pmax, 2)))
     rounded_corner_cell(pdf, data_x, data_y + y_second_row, cell_w, cell_h, str(round(v0 * 3.6, 2)))
-    rounded_corner_cell(pdf, data_x + 32, data_y + y_second_row, cell_w, cell_h, str(round(drf, 2)))
-    rounded_corner_cell(pdf, data_x + 64, data_y + y_second_row, cell_w, cell_h, str(round(rfmax, 2)))
+    rounded_corner_cell(pdf, data_x + 26, data_y + y_second_row, cell_w, cell_h, str(round(drf, 2)))
+    rounded_corner_cell(pdf, data_x + 52, data_y + y_second_row, cell_w, cell_h, str(round(rfmax, 2)))
 
     pdf.set_font(font_family, "", 8)
     pdf.set_text_color(220, 220, 220)
     rounded_corner_cell(pdf, data_x, data_y + 9, cell_w, cell_h_sub, "F0 [N/kg]")
-    rounded_corner_cell(pdf, data_x + 32, data_y + 9, cell_w, cell_h_sub, "V0 [m/s]")
-    rounded_corner_cell(pdf, data_x + 64, data_y + 9, cell_w, cell_h_sub, "PMax [W]")
+    rounded_corner_cell(pdf, data_x + 26, data_y + 9, cell_w, cell_h_sub, "V0 [m/s]")
+    rounded_corner_cell(pdf, data_x + 52, data_y + 9, cell_w, cell_h_sub, "PMax [W]")
     rounded_corner_cell(pdf, data_x, data_y + 9 + y_second_row, cell_w, cell_h_sub, "V0 [km/h]")
-    rounded_corner_cell(pdf, data_x + 32, data_y + 9 + y_second_row, cell_w, cell_h_sub, "DRF")
-    rounded_corner_cell(pdf, data_x + 64, data_y + 9 + y_second_row, cell_w, cell_h_sub, "RFmax")
+    rounded_corner_cell(pdf, data_x + 26, data_y + 9 + y_second_row, cell_w, cell_h_sub, "DRF")
+    rounded_corner_cell(pdf, data_x + 52, data_y + 9 + y_second_row, cell_w, cell_h_sub, "RFmax")
 
     pdf.set_font(font_family, "", 16)
     pdf.set_text_color(*BLACK_RGB)
-    pdf.text(170, 135, texts["recommendation"])
+    pdf.text(right_x, rec_title_y, texts["recommendation"])
     pdf.set_font(font_family, "", 10)
-    y_coordinate = 142
+    y_coordinate = rec_text_y
     for item in recommendations:
-        pdf.text(170, y_coordinate, "* " + item)
+        pdf.text(right_x, y_coordinate, "* " + item)
         y_coordinate += 8
 
     return bytes(pdf.output(dest="S"))
