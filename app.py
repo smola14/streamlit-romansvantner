@@ -41,6 +41,11 @@ PDF_TEXT = {
     "English": {
         "fv_title": "Force-Velocity Profile",
         "recommendation": "Recommendation",
+        "player_fv_profile": "Player FV profile",
+        "quadrant_reference": "Quadrant reference",
+        "upper_reference": "Upper reference",
+        "player_label": "Player",
+        "lower_reference": "Lower reference",
         "notes": "Notes",
         "f0_status": "F0 vs norm",
         "v0_status": "V0 vs norm",
@@ -91,6 +96,11 @@ PDF_TEXT = {
     "Slovak": {
         "fv_title": "Silovo-rýchlostný profil",
         "recommendation": "Odporúčanie",
+        "player_fv_profile": "Hráčsky FV profil",
+        "quadrant_reference": "Kvadrantová referencia",
+        "upper_reference": "Horná referencia",
+        "player_label": "Hráč",
+        "lower_reference": "Dolná referencia",
         "notes": "Poznámka",
         "f0_status": "F0 vs norma",
         "v0_status": "V0 vs norma",
@@ -593,9 +603,8 @@ def render_player_photo_selector(key_prefix: str, client_id: str) -> bytes | Non
 
     if current_bytes:
         st.caption("Player photo")
-        st.markdown('<div class="thumb-card">', unsafe_allow_html=True)
-        st.image(current_bytes, width=120)
-        st.markdown("</div>", unsafe_allow_html=True)
+        thumb_col, _ = st.columns([0.34, 0.66])
+        thumb_col.image(current_bytes, width=140)
         return current_bytes
 
     st.caption("Add a player photo once and it will be reused for future exports.")
@@ -962,7 +971,13 @@ def make_fv_profile_player_only(report: dict[str, Any]) -> io.BytesIO:
     return buf
 
 
-def make_norm_scatter_plot(report: dict[str, Any], norm_row: dict[str, Any], scatter_entry: dict[str, Any]) -> io.BytesIO:
+def make_norm_scatter_plot(
+    report: dict[str, Any],
+    norm_row: dict[str, Any],
+    scatter_entry: dict[str, Any],
+    language: str,
+) -> io.BytesIO:
+    texts = PDF_TEXT[language]
     points = scatter_entry.get("points") or []
     x_values = [float(point["v0"]) for point in points]
     y_values = [float(point["f0"]) for point in points]
@@ -995,7 +1010,7 @@ def make_norm_scatter_plot(report: dict[str, Any], norm_row: dict[str, Any], sca
     ax.set_ylim(min(all_y) - y_pad, max(all_y) + y_pad)
     ax.set_xlabel("V0 [m/s]")
     ax.set_ylabel("F0 [N/kg]")
-    ax.set_title(f"Quadrant reference | {norm_row.get('category')}")
+    ax.set_title(f"{texts['quadrant_reference']} | {norm_row.get('category')}")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.grid(True, linestyle="--", alpha=0.18)
@@ -1010,7 +1025,9 @@ def make_norm_scatter_plot(report: dict[str, Any], norm_row: dict[str, Any], sca
 def make_normative_fv_profile(
     report: dict[str, Any],
     norm_row: dict[str, Any],
+    language: str,
 ) -> io.BytesIO:
+    texts = PDF_TEXT[language]
     player_v0 = float(report["v0"])
     player_f0 = float(report["f0"])
     bbox = dict(boxstyle="round", edgecolor="none", facecolor=BLUE_HEX)
@@ -1027,9 +1044,23 @@ def make_normative_fv_profile(
     y_player = [player_f0, 0]
 
     fig, ax_line = plt.subplots(figsize=(5.8, 3.8))
-    ax_line.plot(upper_x, upper_y, label="Upper reference", linestyle="--", color="#00C060", linewidth=2.0)
-    ax_line.plot(x_player, y_player, label="Player", color=BLUE_HEX, linewidth=2.5)
-    ax_line.plot(lower_x, lower_y, label="Lower reference", linestyle="--", color="#FB3331", linewidth=2.0)
+    ax_line.plot(
+        upper_x,
+        upper_y,
+        label=texts["upper_reference"],
+        linestyle="--",
+        color="#00C060",
+        linewidth=2.0,
+    )
+    ax_line.plot(x_player, y_player, label=texts["player_label"], color=BLUE_HEX, linewidth=2.5)
+    ax_line.plot(
+        lower_x,
+        lower_y,
+        label=texts["lower_reference"],
+        linestyle="--",
+        color="#FB3331",
+        linewidth=2.0,
+    )
     ax_line.annotate(
         str(round(player_v0, 2)),
         (player_v0, 0),
@@ -1054,7 +1085,7 @@ def make_normative_fv_profile(
     ax_line.spines["right"].set_visible(False)
     ax_line.set_xlabel("V0 [m/s]")
     ax_line.set_ylabel("F0 [N/kg]")
-    ax_line.set_title("Player FV profile", fontsize=10)
+    ax_line.set_title(texts["player_fv_profile"], fontsize=10)
     ax_line.set_xlim(-x_pad * 0.2, max(upper_x[1], player_v0) + x_pad)
     ax_line.set_ylim(-y_pad * 0.2, max(upper_y[0], player_f0) + y_pad)
     ax_line.legend(loc="upper right", frameon=False)
@@ -1214,9 +1245,9 @@ def build_normative_fv_pdf(
     language: str,
 ) -> bytes:
     texts = PDF_TEXT[language]
-    fv_buf = make_normative_fv_profile(report, norm_row)
+    fv_buf = make_normative_fv_profile(report, norm_row, language)
     scatter_buf = (
-        make_norm_scatter_plot(report, norm_row, scatter_entry)
+        make_norm_scatter_plot(report, norm_row, scatter_entry, language)
         if scatter_entry
         else None
     )
@@ -1240,14 +1271,13 @@ def build_normative_fv_pdf(
     fv_chart_y = 56
     fv_chart_w = left_w
     metrics_y = 148
-    metric_gap_x = 26
-    rec_title_y = 170
-    rec_text_y = 178
+    rec_title_y = 158
+    rec_text_y = 166
     photo_w = 46
     photo_x = right_x + (right_w - photo_w) / 2
     photo_y = 14
     scatter_y = 66
-    scatter_w = 118
+    scatter_w = 96
     scatter_x = right_x + (right_w - scatter_w) / 2
     rs_logo_w = 36
     rs_logo_x = pdf.w - rs_logo_w - 10
@@ -1264,7 +1294,7 @@ def build_normative_fv_pdf(
     pdf.set_text_color(128, 128, 128)
     pdf.set_font(font_family, "", 12)
     pdf.set_xy(identity_x, subtitle_y)
-    pdf.cell(0, 10, f"{texts['fv_title']} | Norm: {norm_row.get('category')}", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, texts["fv_title"], new_x="LMARGIN", new_y="NEXT")
 
     quadrant = get_norm_quadrant(report, norm_row)
     quadrant_result = get_quadrant_result(quadrant, language)
@@ -1291,7 +1321,8 @@ def build_normative_fv_pdf(
     drf = float(report.get("ratioOfForceDecrease") or 0)
     rfmax = float(report.get("ratioOfForceMax") or 0)
 
-    data_x = left_x + 8
+    metrics_block_w = 74
+    data_x = left_x + (left_w - metrics_block_w) / 2
     data_y = metrics_y
     y_second_row = 18
     cell_w = 22
@@ -1419,32 +1450,12 @@ def render_fv_export_dialog(
         or ""
     )
 
-    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-    metric_col1.metric("Selected F0", format_decimal(selected_report.get("f0")))
-    metric_col2.metric("Selected V0", format_decimal(selected_report.get("v0")))
-    metric_col3.metric("Selected PMax", format_decimal(selected_report.get("pMax")))
-    metric_col4.metric("Selected Confidence", format_decimal(selected_report.get("confidence"), 3))
-
     player_photo_bytes = render_player_photo_selector(
         f"fv_player_photo_{exercise.get('id')}",
         player_client_id,
     ) if player_client_id else None
 
     if export_mode == "Normative" and selected_norm is not None:
-        reference_col1, reference_col2, reference_col3 = st.columns(3)
-        reference_col1.metric(
-            "Reference F0 median",
-            format_decimal(selected_norm.get("f0_median")),
-        )
-        reference_col2.metric(
-            "Reference V0 median",
-            format_decimal(selected_norm.get("v0_median")),
-        )
-        reference_col3.metric(
-            "Reference sample",
-            format_optional_value(selected_norm.get("used_n") or selected_norm.get("raw_n")),
-        )
-
         missing_values = [
             key
             for key in ("f0_median", "v0_median")
