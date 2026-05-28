@@ -562,6 +562,84 @@ def fetch_split_exercise(
     return None, f"1080 API returned an unexpected response while loading split data: {response.status_code}"
 
 
+def fetch_split_set(
+    api_key: str, set_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/Split/Set/{set_id}",
+            headers=build_headers(api_key),
+            params={
+                "splitLength": 5,
+                "useYards": False,
+                "includeRawPeaksAndAverages": True,
+            },
+            timeout=API_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        return None, f"Communication error while loading split set data: {exc}"
+
+    if response.status_code == 200:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload, None
+        return None, "The split set response did not return the expected object format."
+
+    if response.status_code in (401, 403):
+        return None, "The API key is no longer authorized to load split set data."
+
+    return None, f"1080 API returned an unexpected response while loading split set data: {response.status_code}"
+
+
+def merge_split_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    if not payloads:
+        return {"reports": []}
+
+    merged = dict(payloads[0])
+    merged_reports: list[dict[str, Any]] = []
+    for payload in payloads:
+        reports = payload.get("reports") or []
+        if isinstance(reports, list):
+            merged_reports.extend(reports)
+    merged["reports"] = merged_reports
+    return merged
+
+
+def load_split_payload_for_exercise(
+    api_key: str,
+    exercise_id: str,
+    exercise: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    exercise_payload, error = fetch_split_exercise(api_key, exercise_id)
+    if error:
+        return None, error
+
+    if (exercise_payload.get("reports") or []):
+        return exercise_payload, None
+
+    set_payloads: list[dict[str, Any]] = []
+    set_errors: list[str] = []
+    for exercise_set in (exercise or {}).get("sets") or []:
+        set_id = str(exercise_set.get("id") or "")
+        if not set_id:
+            continue
+        set_payload, set_error = fetch_split_set(api_key, set_id)
+        if set_error:
+            set_errors.append(set_error)
+            continue
+        if set_payload:
+            set_payloads.append(set_payload)
+
+    merged_payload = merge_split_payloads(set_payloads)
+    if merged_payload.get("reports"):
+        return merged_payload, None
+
+    if set_errors:
+        return exercise_payload, set_errors[0]
+
+    return exercise_payload, None
+
+
 def storage_namespace(api_key: str) -> str:
     digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
     return f"1080_clients:{digest}"
@@ -1548,13 +1626,18 @@ def build_normative_fv_pdf(
     return bytes(pdf.output(dest="S"))
 
 
-def load_exercise_report(api_key: str, exercise_id: str, report_type: str) -> bool:
+def load_exercise_report(
+    api_key: str,
+    exercise_id: str,
+    report_type: str,
+    exercise: dict[str, Any] | None = None,
+) -> bool:
     cache_key = f"{report_type}:{exercise_id}"
 
     if report_type == "fv":
         payload, error = fetch_force_velocity_exercise(api_key, exercise_id)
     else:
-        payload, error = fetch_split_exercise(api_key, exercise_id)
+        payload, error = load_split_payload_for_exercise(api_key, exercise_id, exercise)
 
     if error:
         st.session_state["exercise_report_errors"][cache_key] = error
@@ -1736,7 +1819,7 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any]) -> N
     top_col1, top_col2, top_col3 = st.columns(3)
     top_col1.metric("Runs", len(reports))
     top_col2.metric("Split length", format_decimal(reports[0].get("splitLength")) if reports else "5.00")
-    top_col3.metric("Units", "meters" if reports and not reports[0].get("isYards") else "yards")
+    top_col3.metric("Units", "meters" if reports and not reports[0].get("isYards") else ("yards" if reports else "-"))
 
     split_rows: list[dict[str, Any]] = []
     for report_index, report in enumerate(reports):
@@ -1810,7 +1893,7 @@ def render_session_detail_content(
             cache_key = f"split:{exercise.get('id')}"
             if cache_key not in st.session_state["exercise_report_cache"] and api_key:
                 with st.spinner("Loading deceleration split data..."):
-                    load_exercise_report(api_key, str(exercise.get("id") or ""), "split")
+                    load_exercise_report(api_key, str(exercise.get("id") or ""), "split", exercise)
 
             error = st.session_state["exercise_report_errors"].get(cache_key)
             if error:
