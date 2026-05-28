@@ -591,6 +591,60 @@ def fetch_split_set(
     return None, f"1080 API returned an unexpected response while loading split set data: {response.status_code}"
 
 
+def fetch_training_data_set(
+    api_key: str, set_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/TrainingData/Set/{set_id}",
+            headers=build_headers(api_key),
+            timeout=API_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        return None, f"Communication error while loading set training data: {exc}"
+
+    if response.status_code == 200:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload, None
+        return None, "The set training data response did not return the expected object format."
+
+    if response.status_code in (401, 403):
+        return None, "The API key is no longer authorized to load set training data."
+
+    return None, f"1080 API returned an unexpected response while loading set training data: {response.status_code}"
+
+
+def fetch_split_runs(
+    api_key: str, run_ids: list[str]
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/Split/Runs",
+            headers=build_headers(api_key),
+            params={
+                "runIds": run_ids,
+                "splitLength": 5,
+                "useYards": False,
+                "includeRawPeaksAndAverages": True,
+            },
+            timeout=API_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        return None, f"Communication error while loading split run data: {exc}"
+
+    if response.status_code == 200:
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload, None
+        return None, "The split runs response did not return the expected list format."
+
+    if response.status_code in (401, 403):
+        return None, "The API key is no longer authorized to load split run data."
+
+    return None, f"1080 API returned an unexpected response while loading split run data: {response.status_code}"
+
+
 def merge_split_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
     if not payloads:
         return {"reports": []}
@@ -603,6 +657,18 @@ def merge_split_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
             merged_reports.extend(reports)
     merged["reports"] = merged_reports
     return merged
+
+
+def build_split_collection_from_reports(
+    reports: list[dict[str, Any]],
+    source_entity_id: str,
+    source_entity_type: str,
+) -> dict[str, Any]:
+    return {
+        "sourceEntityId": source_entity_id,
+        "sourceEntityType": source_entity_type,
+        "reports": reports,
+    }
 
 
 def load_split_payload_for_exercise(
@@ -623,6 +689,28 @@ def load_split_payload_for_exercise(
         set_id = str(exercise_set.get("id") or "")
         if not set_id:
             continue
+        set_training_payload, set_training_error = fetch_training_data_set(api_key, set_id)
+        if set_training_error:
+            set_errors.append(set_training_error)
+            continue
+
+        motion_groups = (set_training_payload or {}).get("motionGroups") or []
+        run_ids = [
+            str(group.get("id") or "")
+            for group in motion_groups
+            if str(group.get("id") or "")
+        ]
+        if run_ids:
+            run_reports, run_error = fetch_split_runs(api_key, run_ids)
+            if run_error:
+                set_errors.append(run_error)
+                continue
+            if run_reports:
+                set_payloads.append(
+                    build_split_collection_from_reports(run_reports, set_id, "Set")
+                )
+                continue
+
         set_payload, set_error = fetch_split_set(api_key, set_id)
         if set_error:
             set_errors.append(set_error)
