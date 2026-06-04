@@ -51,6 +51,37 @@ RECENT_OPENED_SESSION_DURATION = timedelta(days=1)
 PDF_TEXT = {
     "English": {
         "fv_title": "Force-Velocity Profile",
+        "decel_title": "Deceleration Profile",
+        "decel_chart_title": "Deceleration trace",
+        "decel_open_export": "Open deceleration PDF export",
+        "decel_download_pdf": "Download deceleration PDF",
+        "decel_choose_run": "Choose the deceleration run and optional assets for the export.",
+        "decel_run": "Run",
+        "decel_preview_run": "Preview run",
+        "decel_runs": "Runs",
+        "decel_threshold": "Threshold",
+        "decel_stop_speed": "Stop speed",
+        "decel_avg": "Average deceleration",
+        "decel_max": "DecM",
+        "decel_vmax": "VMax",
+        "decel_tts": "TTS",
+        "decel_dts": "DTS",
+        "decel_no_runs": "No deceleration runs are available for PDF export.",
+        "decel_no_valid_runs": "No valid deceleration runs were derived from the available training data.",
+        "language": "Language",
+        "slovak": "Slovak",
+        "english": "English",
+        "branding": "Branding",
+        "choose_logo": "Choose logo",
+        "no_logo_selected": "No logo selected",
+        "selected_logo": "Selected logo",
+        "clear_selection": "Clear selection",
+        "upload_new_logo": "Upload new logo",
+        "player_photo": "Player photo",
+        "add_player_photo": "Add a player photo once and it will be reused for future exports.",
+        "upload_player_photo": "Upload player photo",
+        "early_dec": "Early dec",
+        "late_dec": "Late dec",
         "recommendation": "Recommendation",
         "player_fv_profile": "Player FV profile",
         "quadrant_reference": "Quadrant reference",
@@ -106,6 +137,37 @@ PDF_TEXT = {
     },
     "Slovak": {
         "fv_title": "Silovo-rýchlostný profil",
+        "decel_title": "Deceleračný profil",
+        "decel_chart_title": "Priebeh decelerácie",
+        "decel_open_export": "Otvoriť PDF export decelerácie",
+        "decel_download_pdf": "Stiahnuť PDF decelerácie",
+        "decel_choose_run": "Vyber pokus a voliteľné podklady pre export.",
+        "decel_run": "Pokus",
+        "decel_preview_run": "Náhľad pokusu",
+        "decel_runs": "Pokusy",
+        "decel_threshold": "Prahová hodnota",
+        "decel_stop_speed": "Koncová rýchlosť",
+        "decel_avg": "Priem. decelerácia",
+        "decel_max": "DecM",
+        "decel_vmax": "VMax",
+        "decel_tts": "TTS",
+        "decel_dts": "DTS",
+        "decel_no_runs": "Pre export nie sú dostupné žiadne deceleračné pokusy.",
+        "decel_no_valid_runs": "Z dostupných tréningových dát sa nepodarilo odvodiť validné deceleračné pokusy.",
+        "language": "Jazyk",
+        "slovak": "Slovensky",
+        "english": "Anglicky",
+        "branding": "Branding",
+        "choose_logo": "Vybrať logo",
+        "no_logo_selected": "Nie je vybrané logo",
+        "selected_logo": "Vybrané logo",
+        "clear_selection": "Zrušiť výber",
+        "upload_new_logo": "Nahrať nové logo",
+        "player_photo": "Fotka hráča",
+        "add_player_photo": "Fotku hráča stačí nahrať raz a použije sa aj pri ďalších exportoch.",
+        "upload_player_photo": "Nahrať fotku hráča",
+        "early_dec": "Skorá dec.",
+        "late_dec": "Neskorá dec.",
         "recommendation": "Odporúčanie",
         "player_fv_profile": "Hráčsky FV profil",
         "quadrant_reference": "Kvadrantová referencia",
@@ -1003,9 +1065,20 @@ def build_fallback_deceleration_runs(
         average_deceleration = max((top_speed - DECEL_V_STOP) / deceleration_time, 0.0)
         plot_samples: list[dict[str, float]] = []
         elapsed_time = 0.0
-        for split in report.get("splits") or []:
+        splits = report.get("splits") or []
+        first_speed = float((splits[0] or {}).get("topSpeed") or top_speed) if splits else top_speed
+        plot_samples.append(
+            {
+                "time_s": 0.0,
+                "t_rel": 0.0,
+                "speed_mps": first_speed,
+                "acceleration_mps2": 0.0,
+            }
+        )
+        for split in splits:
             split_time = float(split.get("time") or 0)
             top_split_speed = float(split.get("topSpeed") or 0)
+            elapsed_time += split_time
             plot_samples.append(
                 {
                     "time_s": elapsed_time,
@@ -1014,12 +1087,13 @@ def build_fallback_deceleration_runs(
                     "acceleration_mps2": 0.0,
                 }
             )
-            elapsed_time += split_time
+        final_time = max(elapsed_time, deceleration_time)
+        if not plot_samples or plot_samples[-1]["speed_mps"] > DECEL_V_STOP:
             plot_samples.append(
                 {
-                    "time_s": elapsed_time,
-                    "t_rel": elapsed_time,
-                    "speed_mps": top_split_speed,
+                    "time_s": final_time,
+                    "t_rel": final_time,
+                    "speed_mps": DECEL_V_STOP,
                     "acceleration_mps2": 0.0,
                 }
             )
@@ -1255,28 +1329,32 @@ def load_saved_logo_bytes(file_name: str) -> bytes | None:
 def render_saved_logo_picker(
     saved_logos: list[str],
     selected_logo_state_key: str,
+    language: str = "English",
 ) -> str:
-    current_selection = st.session_state.get(selected_logo_state_key, "Choose logo")
+    texts = PDF_TEXT[language]
+    choose_logo_option = "__choose_logo__"
+    no_saved_logo_option = "__no_saved_logo__"
+    current_selection = st.session_state.get(selected_logo_state_key, choose_logo_option)
     current_logo_bytes = (
         load_saved_logo_bytes(current_selection)
-        if current_selection not in {"No saved logo", "Choose logo"}
+        if current_selection not in {no_saved_logo_option, choose_logo_option}
         else None
     )
 
     if current_logo_bytes:
         preview_col, label_col = st.columns([0.2, 0.8], vertical_alignment="center")
         preview_col.image(current_logo_bytes, width=32)
-        label_col.caption(f"Selected logo: {current_selection}")
+        label_col.caption(f"{texts['selected_logo']}: {current_selection}")
     else:
-        st.caption("No logo selected")
+        st.caption(texts["no_logo_selected"])
 
-    with st.popover("Choose logo"):
-        if current_selection not in {"No saved logo", "Choose logo"} and st.button(
-            "Clear selection",
+    with st.popover(texts["choose_logo"]):
+        if current_selection not in {no_saved_logo_option, choose_logo_option} and st.button(
+            texts["clear_selection"],
             key=f"{selected_logo_state_key}_clear",
             width="stretch",
         ):
-            st.session_state[selected_logo_state_key] = "Choose logo"
+            st.session_state[selected_logo_state_key] = choose_logo_option
             st.rerun()
 
         for file_name in saved_logos:
@@ -1300,7 +1378,7 @@ def render_saved_logo_picker(
                 st.session_state[selected_logo_state_key] = file_name
                 st.rerun()
 
-    return st.session_state.get(selected_logo_state_key, "Choose logo")
+    return st.session_state.get(selected_logo_state_key, choose_logo_option)
 
 
 def ensure_uploaded_player_photos_dir() -> None:
@@ -1354,12 +1432,15 @@ def validate_uploaded_file_size(uploaded_file: Any, max_bytes: int, label: str) 
     return True
 
 
-def render_logo_library_selector(key_prefix: str) -> bytes | None:
+def render_logo_library_selector(key_prefix: str, language: str = "English") -> bytes | None:
+    texts = PDF_TEXT[language]
     saved_logos = list_uploaded_logos()
     selected_logo_state_key = f"{key_prefix}_selected_logo_name"
     pending_logo_state_key = f"{key_prefix}_pending_saved_logo"
     processed_logo_upload_key = f"{key_prefix}_processed_logo_upload"
-    default_option = "No saved logo" if not saved_logos else "Choose logo"
+    no_saved_logo_option = "__no_saved_logo__"
+    choose_logo_option = "__choose_logo__"
+    default_option = no_saved_logo_option if not saved_logos else choose_logo_option
 
     if selected_logo_state_key not in st.session_state:
         st.session_state[selected_logo_state_key] = default_option
@@ -1368,25 +1449,26 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     if pending_logo_name:
         st.session_state[selected_logo_state_key] = pending_logo_name
 
-    options = ["Choose logo", *saved_logos] if saved_logos else ["No saved logo"]
+    options = [choose_logo_option, *saved_logos] if saved_logos else [no_saved_logo_option]
     if st.session_state[selected_logo_state_key] not in options:
         st.session_state[selected_logo_state_key] = default_option
 
-    st.markdown("##### Branding")
+    st.markdown(f"##### {texts['branding']}")
     select_col, upload_col = st.columns([1, 1])
     with select_col:
         if saved_logos:
-            selected_logo = render_saved_logo_picker(saved_logos, selected_logo_state_key)
+            selected_logo = render_saved_logo_picker(saved_logos, selected_logo_state_key, language)
         else:
             st.selectbox(
-                "Choose logo",
+                texts["choose_logo"],
                 options=options,
+                format_func=lambda option: texts["no_logo_selected"] if option == no_saved_logo_option else texts["choose_logo"],
                 key=selected_logo_state_key,
                 disabled=True,
             )
-            selected_logo = "No saved logo"
+            selected_logo = no_saved_logo_option
     uploaded_logo = upload_col.file_uploader(
-        "Upload new logo",
+        texts["upload_new_logo"],
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=False,
         key=f"{key_prefix}_logo_upload",
@@ -1413,25 +1495,26 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
     if uploaded_logo is not None and logo_is_valid:
         return uploaded_logo.getvalue()
 
-    if selected_logo not in {"No saved logo", "Choose logo"}:
+    if selected_logo not in {no_saved_logo_option, choose_logo_option}:
         return load_saved_logo_bytes(selected_logo)
 
     return None
 
 
-def render_player_photo_selector(key_prefix: str, client_id: str) -> bytes | None:
+def render_player_photo_selector(key_prefix: str, client_id: str, language: str = "English") -> bytes | None:
+    texts = PDF_TEXT[language]
     saved_photo = get_saved_player_photo_name(client_id)
     current_bytes = load_player_photo_bytes(client_id)
 
     if current_bytes:
-        st.caption("Player photo")
+        st.caption(texts["player_photo"])
         thumb_col, _ = st.columns([0.34, 0.66])
         thumb_col.image(current_bytes, width=140)
         return current_bytes
 
-    st.caption("Add a player photo once and it will be reused for future exports.")
+    st.caption(texts["add_player_photo"])
     uploaded_photo = st.file_uploader(
-        "Upload player photo",
+        texts["upload_player_photo"],
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=False,
         key=f"{key_prefix}_player_photo_upload",
@@ -2170,7 +2253,8 @@ def build_non_normative_split_pdf(
     return bytes(pdf.output(dest="S"))
 
 
-def make_deceleration_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
+def make_deceleration_speed_time_plot(run: dict[str, Any], language: str = "Slovak") -> io.BytesIO:
+    texts = PDF_TEXT[language]
     samples = run.get("plotSamples") or []
     fig, ax = plt.subplots(figsize=(5.8, 3.8))
 
@@ -2226,8 +2310,8 @@ def make_deceleration_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
         ax.axhline(v_stop, linestyle=":", linewidth=1.0, color="#6b7280", alpha=0.6)
 
         zone_y = max(segment_speeds) * 0.5 if segment_speeds else 0
-        ax.text((segment_times[0] + mid_time) / 2, zone_y, "Early dec", ha="center", va="top", fontsize=9, weight="bold")
-        ax.text((mid_time + stop_time) / 2, zone_y, "Late dec", ha="center", va="top", fontsize=9, weight="bold")
+        ax.text((segment_times[0] + mid_time) / 2, zone_y, texts["early_dec"], ha="center", va="top", fontsize=9, weight="bold")
+        ax.text((mid_time + stop_time) / 2, zone_y, texts["late_dec"], ha="center", va="top", fontsize=9, weight="bold")
 
         ax.annotate(
             "",
@@ -2247,9 +2331,9 @@ def make_deceleration_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.set_xlabel("Čas [s]")
-    ax.set_ylabel("Rýchlosť [m/s]")
-    ax.set_title("Deceleračný priebeh", fontsize=10)
+    ax.set_xlabel("Time [s]" if language == "English" else "Čas [s]")
+    ax.set_ylabel("Speed [m/s]" if language == "English" else "Rýchlosť [m/s]")
+    ax.set_title(texts["decel_chart_title"], fontsize=10)
     ax.grid(True, linestyle="--", alpha=0.18)
     ax.margins(x=0.02, y=0.20)
 
@@ -2267,8 +2351,10 @@ def build_non_normative_deceleration_pdf(
     exercise_name: str,
     logo_bytes: bytes | None,
     player_photo_bytes: bytes | None,
+    language: str,
 ) -> bytes:
-    chart_buf = make_deceleration_speed_time_plot(run)
+    texts = PDF_TEXT[language]
+    chart_buf = make_deceleration_speed_time_plot(run, language)
     pdf = FPDF("L", "mm", "A4")
     pdf.set_auto_page_break(auto=False)
     pdf.add_page()
@@ -2305,7 +2391,7 @@ def build_non_normative_deceleration_pdf(
     pdf.set_text_color(128, 128, 128)
     pdf.set_font(font_family, "", 12)
     pdf.set_xy(left_x, subtitle_y)
-    pdf.cell(0, 10, "Deceleračný profil", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, texts["decel_title"], new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font(font_family, "", 11)
     pdf.set_xy(left_x, exercise_y)
@@ -2336,11 +2422,11 @@ def build_non_normative_deceleration_pdf(
 
     pdf.set_font(font_family, "", 8)
     pdf.set_text_color(220, 220, 220)
-    rounded_corner_cell(pdf, data_x, metrics_y + 9, cell_w, cell_h_sub, "AverageDeceleration")
-    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + 9, cell_w, cell_h_sub, "DecM")
-    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + 9, cell_w, cell_h_sub, "VMax")
-    rounded_corner_cell(pdf, data_x, metrics_y + row_gap + 9, cell_w, cell_h_sub, "TTS")
-    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, "DTS")
+    rounded_corner_cell(pdf, data_x, metrics_y + 9, cell_w, cell_h_sub, texts["decel_avg"])
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + 9, cell_w, cell_h_sub, texts["decel_max"])
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + 9, cell_w, cell_h_sub, texts["decel_vmax"])
+    rounded_corner_cell(pdf, data_x, metrics_y + row_gap + 9, cell_w, cell_h_sub, texts["decel_tts"])
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, texts["decel_dts"])
 
     if RS_LOGO_PATH.is_file():
         pdf.image(str(RS_LOGO_PATH), x=rs_logo_x, y=rs_logo_y, w=rs_logo_w)
@@ -2691,7 +2777,7 @@ def render_fv_export_dialog(
         selected_norm = norm_options[selected_norm_category]
         scatter_entry = scatter_map.get(selected_norm_category)
 
-    logo_bytes = render_logo_library_selector(f"fv_logo_{exercise.get('id')}")
+    logo_bytes = render_logo_library_selector("shared_logo", export_language)
 
     selected_runner = selected_report.get("runnerInfo") or runner_info or {}
     export_name = (
@@ -2706,8 +2792,9 @@ def render_fv_export_dialog(
     )
 
     player_photo_bytes = render_player_photo_selector(
-        f"fv_player_photo_{exercise.get('id')}",
+        f"shared_player_photo_{player_client_id}",
         player_client_id,
+        export_language,
     ) if player_client_id else None
 
     if export_mode == "Normative" and selected_norm is not None:
@@ -2787,12 +2874,13 @@ def render_split_export_dialog(
     )
     selected_run = run_options[selected_run_label]
 
-    logo_bytes = render_logo_library_selector(f"split_logo_{exercise.get('id')}")
+    logo_bytes = render_logo_library_selector("shared_logo", "English")
     export_name = format_optional_value(client.get("displayName"))
     player_client_id = str(client.get("id") or "")
     player_photo_bytes = render_player_photo_selector(
-        f"split_player_photo_{exercise.get('id')}",
+        f"shared_player_photo_{player_client_id}",
         player_client_id,
+        "English",
     ) if player_client_id else None
 
     pdf_bytes = build_non_normative_split_pdf(
@@ -2818,9 +2906,16 @@ def render_deceleration_export_dialog(
     payload: dict[str, Any],
     client: dict[str, Any],
 ) -> None:
+    export_language = st.selectbox(
+        PDF_TEXT["English"]["language"],
+        options=["English", "Slovak"],
+        format_func=lambda option: PDF_TEXT[option]["english"] if option == "English" else PDF_TEXT[option]["slovak"],
+        key=f"decel_export_language_{exercise.get('id')}",
+    )
+    texts = PDF_TEXT[export_language]
     deceleration_runs = payload.get("_deceleration_runs") or []
     if not deceleration_runs:
-        st.info("No deceleration runs are available for PDF export.")
+        st.info(texts["decel_no_runs"])
         return
 
     run_options = {
@@ -2831,20 +2926,21 @@ def render_deceleration_export_dialog(
         for index, run in enumerate(deceleration_runs)
     }
 
-    st.caption("Choose the deceleration run and optional assets for the export.")
+    st.caption(texts["decel_choose_run"])
     selected_run_label = st.selectbox(
-        "Run",
+        texts["decel_run"],
         options=list(run_options.keys()),
         key=f"decel_run_select_{exercise.get('id')}",
     )
     selected_run = run_options[selected_run_label]
 
-    logo_bytes = render_logo_library_selector(f"decel_logo_{exercise.get('id')}")
+    logo_bytes = render_logo_library_selector("shared_logo", export_language)
     export_name = format_optional_value(client.get("displayName"))
     player_client_id = str(client.get("id") or "")
     player_photo_bytes = render_player_photo_selector(
-        f"decel_player_photo_{exercise.get('id')}",
+        f"shared_player_photo_{player_client_id}",
         player_client_id,
+        export_language,
     ) if player_client_id else None
 
     exercise_name = str(
@@ -2859,10 +2955,11 @@ def render_deceleration_export_dialog(
         exercise_name,
         logo_bytes,
         player_photo_bytes,
+        export_language,
     )
     file_name = f"{safe_filename(export_name)}_{safe_filename(str(exercise.get('id')))}_deceleration_profile.pdf"
     st.download_button(
-        "Download deceleration PDF",
+        texts["decel_download_pdf"],
         data=pdf_bytes,
         file_name=file_name,
         mime="application/pdf",
