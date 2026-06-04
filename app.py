@@ -31,6 +31,8 @@ GREEN_RGB = (0, 192, 96)
 ORANGE_RGB = (254, 148, 65)
 RED_RGB = (251, 51, 49)
 BLUE_HEX = "#303674"
+ORANGE_HEX = "#FE9441"
+RED_HEX = "#FB3331"
 FV_NORMS_PATH = Path(__file__).resolve().parent / "data" / "fv_norms.xlsx"
 FV_NORM_SCATTER_PATH = Path(__file__).resolve().parent / "data" / "fv_norm_scatter.json"
 RS_LOGO_PATH = Path(__file__).resolve().parent / "rs-logo.png"
@@ -2202,8 +2204,8 @@ def make_deceleration_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
         mid_time = times[mid_rel_index]
 
         ax.scatter(vmax_time, vmax_speed, s=48, color=BLUE_HEX, zorder=5)
-        ax.scatter(stop_time, stop_speed, s=48, color=ORANGE_RGB, zorder=5)
-        ax.scatter(decm_time, decm_speed, s=58, color=RED_RGB, marker="D", zorder=6)
+        ax.scatter(stop_time, stop_speed, s=48, color=ORANGE_HEX, zorder=5)
+        ax.scatter(decm_time, decm_speed, s=58, color=RED_HEX, marker="D", zorder=6)
 
         ax.annotate("VMax", (vmax_time, vmax_speed), xytext=(6, 6), textcoords="offset points", fontsize=9)
         ax.annotate("Stop", (stop_time, stop_speed), xytext=(6, 6), textcoords="offset points", fontsize=9)
@@ -2218,7 +2220,7 @@ def make_deceleration_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
         )
 
         ax.axvspan(segment_times[0], mid_time, color=BLUE_HEX, alpha=0.12, zorder=1)
-        ax.axvspan(mid_time, stop_time, color=ORANGE_RGB, alpha=0.10, zorder=1)
+        ax.axvspan(mid_time, stop_time, color=ORANGE_HEX, alpha=0.10, zorder=1)
         ax.axvline(mid_time, linestyle="--", linewidth=1.1, color="#6b7280", alpha=0.85)
         ax.axvline(stop_time, linestyle="--", linewidth=1.0, color="#6b7280", alpha=0.7)
         ax.axhline(v_stop, linestyle=":", linewidth=1.0, color="#6b7280", alpha=0.6)
