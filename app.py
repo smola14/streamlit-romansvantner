@@ -1006,9 +1006,7 @@ def load_split_payload_for_exercise(
     if error:
         return None, error
 
-    if (exercise_payload.get("reports") or []):
-        exercise_payload["_debug_fetches"] = debug_steps
-        return exercise_payload, None
+    exercise_has_reports = bool(exercise_payload.get("reports") or [])
 
     set_payloads: list[dict[str, Any]] = []
     set_errors: list[str] = []
@@ -1029,6 +1027,9 @@ def load_split_payload_for_exercise(
             continue
         if set_training_payload:
             training_set_payloads.append(set_training_payload)
+
+        if exercise_has_reports:
+            continue
 
         motion_groups = (set_training_payload or {}).get("motionGroups") or []
         run_ids = [
@@ -1068,23 +1069,23 @@ def load_split_payload_for_exercise(
         if set_payload:
             set_payloads.append(set_payload)
 
-    merged_payload = merge_split_payloads(set_payloads)
-    merged_payload["_debug_fetches"] = debug_steps
-    merged_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
-    merged_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
-    if merged_payload.get("reports"):
-        return merged_payload, None
+    response_payload = exercise_payload if exercise_has_reports else merge_split_payloads(set_payloads)
+    response_payload["_debug_fetches"] = debug_steps
+    response_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
+    response_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
+    if response_payload.get("reports"):
+        return response_payload, None
 
     if set_errors:
-        exercise_payload["_debug_fetches"] = debug_steps
-        exercise_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
-        exercise_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
-        return exercise_payload, set_errors[0]
+        response_payload["_debug_fetches"] = debug_steps
+        response_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
+        response_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
+        return response_payload, set_errors[0]
 
-    exercise_payload["_debug_fetches"] = debug_steps
-    exercise_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
-    exercise_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
-    return exercise_payload, None
+    response_payload["_debug_fetches"] = debug_steps
+    response_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
+    response_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
+    return response_payload, None
 
 
 def storage_namespace(api_key: str) -> str:
