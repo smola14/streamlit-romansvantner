@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import os
+import struct
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
@@ -34,6 +35,8 @@ FV_NORMS_PATH = Path(__file__).resolve().parent / "data" / "fv_norms.xlsx"
 FV_NORM_SCATTER_PATH = Path(__file__).resolve().parent / "data" / "fv_norm_scatter.json"
 RS_LOGO_PATH = Path(__file__).resolve().parent / "rs-logo.png"
 SPLIT_1505_IMAGE_PATH = Path(__file__).resolve().parent / "1505.png"
+DECEL_V_STOP = 0.2
+DECEL_ACC_THRESHOLD = -1.5
 UPLOADED_LOGOS_DIR = Path(__file__).resolve().parent / "uploaded_logos"
 UPLOADED_PLAYER_PHOTOS_DIR = Path(__file__).resolve().parent / "uploaded_player_photos"
 MAX_LOGO_BYTES = 2 * 1024 * 1024
@@ -690,6 +693,168 @@ def build_split_collection_from_reports(
     }
 
 
+def decode_sampledata_base64(sample_b64: str) -> list[dict[str, float]]:
+    if not sample_b64:
+        return []
+
+    normalized = "".join(str(sample_b64).strip().split()).replace("-", "+").replace("_", "/")
+    padding = len(normalized) % 4
+    if padding:
+        normalized += "=" * (4 - padding)
+
+    try:
+        raw = base64.b64decode(normalized, validate=False)
+    except Exception:
+        return []
+
+    if len(raw) % 20 != 0:
+        return []
+
+    rows: list[dict[str, float]] = []
+    unpackers = ("<fffff", ">fffff")
+    for fmt in unpackers:
+        rows.clear()
+        try:
+            for time_s, position_m, speed_mps, acceleration_mps2, force_n in struct.iter_unpack(fmt, raw):
+                rows.append(
+                    {
+                        "time_s": float(time_s),
+                        "position_m": float(position_m),
+                        "speed_mps": float(speed_mps),
+                        "acceleration_mps2": float(acceleration_mps2),
+                        "force_n": float(force_n),
+                    }
+                )
+        except struct.error:
+            continue
+
+        if rows:
+            return rows.copy()
+
+    return []
+
+
+def compute_deceleration_profile_from_samples(
+    samples: list[dict[str, float]],
+    *,
+    v_stop: float = DECEL_V_STOP,
+    acc_threshold: float = DECEL_ACC_THRESHOLD,
+    min_points_after_start: int = 15,
+    min_t_after_start: float = 0.4,
+    end_speed_tol: float = 0.3,
+    min_tts: float = 0.25,
+    min_dts: float = 0.8,
+    min_decmax: float = -1.0,
+) -> dict[str, Any]:
+    ordered_samples = sorted(samples, key=lambda sample: float(sample.get("time_s") or 0))
+    if not ordered_samples:
+        return {"ok": False, "reason": "empty"}
+
+    start_index = next(
+        (
+            index
+            for index, sample in enumerate(ordered_samples)
+            if float(sample.get("acceleration_mps2") or 0) <= acc_threshold
+        ),
+        None,
+    )
+    if start_index is None:
+        return {"ok": False, "reason": "no_decel_threshold"}
+
+    if (len(ordered_samples) - 1 - start_index) < min_points_after_start:
+        return {"ok": False, "reason": "too_few_points_after_start"}
+
+    start_sample = ordered_samples[start_index]
+    end_sample = ordered_samples[-1]
+    start_time = float(start_sample.get("time_s") or 0)
+    if (float(end_sample.get("time_s") or 0) - start_time) < min_t_after_start:
+        return {"ok": False, "reason": "too_short_after_start"}
+
+    stop_index = next(
+        (
+            index
+            for index in range(start_index, len(ordered_samples))
+            if float(ordered_samples[index].get("speed_mps") or 0) <= v_stop
+        ),
+        None,
+    )
+    if stop_index is None:
+        return {"ok": False, "reason": "no_stop_reached"}
+
+    stop_sample = ordered_samples[stop_index]
+    time_to_stop = float(stop_sample.get("time_s") or 0) - start_time
+    distance_to_stop = float(stop_sample.get("position_m") or 0) - float(start_sample.get("position_m") or 0)
+    if time_to_stop <= 0:
+        return {"ok": False, "reason": "bad_tts"}
+    if time_to_stop < min_tts:
+        return {"ok": False, "reason": "tts_too_small"}
+    if distance_to_stop < min_dts:
+        return {"ok": False, "reason": "dts_too_small"}
+
+    decel_segment = ordered_samples[start_index:stop_index + 1]
+    if not decel_segment:
+        return {"ok": False, "reason": "empty_segment"}
+
+    deceleration_max = min(float(sample.get("acceleration_mps2") or 0) for sample in decel_segment)
+    if deceleration_max > min_decmax:
+        return {"ok": False, "reason": "not_enough_braking"}
+
+    end_speed = float(end_sample.get("speed_mps") or 0)
+    if end_speed > (v_stop + end_speed_tol):
+        return {"ok": False, "reason": "end_speed_too_high"}
+
+    negative_values = [
+        float(sample.get("acceleration_mps2") or 0)
+        for sample in decel_segment
+        if float(sample.get("acceleration_mps2") or 0) < 0
+    ]
+    if not negative_values:
+        return {"ok": False, "reason": "no_negative_acc_values"}
+
+    average_deceleration = -sum(negative_values) / len(negative_values)
+    deceleration_max_abs = -deceleration_max
+    top_speed = max(float(sample.get("speed_mps") or 0) for sample in ordered_samples)
+    segment_start_speed = float(start_sample.get("speed_mps") or 0)
+    mid_velocity = 0.5 * (segment_start_speed + v_stop)
+    mid_relative_index = next(
+        (
+            index
+            for index, sample in enumerate(decel_segment)
+            if float(sample.get("speed_mps") or 0) <= mid_velocity
+        ),
+        min(
+            range(len(decel_segment)),
+            key=lambda index: abs(float(decel_segment[index].get("speed_mps") or 0) - mid_velocity),
+        ),
+    )
+    plot_segment = []
+    for sample in ordered_samples:
+        plot_segment.append(
+            {
+                "time_s": float(sample.get("time_s") or 0),
+                "t_rel": float(sample.get("time_s") or 0) - start_time,
+                "speed_mps": float(sample.get("speed_mps") or 0),
+                "acceleration_mps2": float(sample.get("acceleration_mps2") or 0),
+            }
+        )
+
+    return {
+        "ok": True,
+        "averageDeceleration": average_deceleration,
+        "DecM": deceleration_max_abs,
+        "VMax": top_speed,
+        "TTS": time_to_stop,
+        "DTS": distance_to_stop,
+        "vStart": segment_start_speed,
+        "startIndex": start_index,
+        "stopIndex": stop_index,
+        "midIndex": start_index + mid_relative_index,
+        "plotSamples": plot_segment,
+        "vStop": v_stop,
+        "exerciseName": "",
+    }
+
+
 def build_derived_split_runs_from_training_data(set_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     derived_runs: list[dict[str, Any]] = []
 
@@ -757,6 +922,40 @@ def build_derived_split_runs_from_training_data(set_payloads: list[dict[str, Any
             )
 
     return derived_runs
+
+
+def build_deceleration_runs_from_training_data(set_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deceleration_runs: list[dict[str, Any]] = []
+
+    for set_payload in set_payloads:
+        exercise_name = str(set_payload.get("exerciseName") or "")
+        for motion_group in set_payload.get("motionGroups") or []:
+            motions = motion_group.get("motions") or []
+            if not motions:
+                continue
+
+            selected_motion = next(
+                (
+                    motion
+                    for motion in motions
+                    if motion.get("sampleData")
+                ),
+                None,
+            )
+            if not selected_motion:
+                continue
+
+            samples = decode_sampledata_base64(str(selected_motion.get("sampleData") or ""))
+            metrics = compute_deceleration_profile_from_samples(samples)
+            if not metrics.get("ok"):
+                continue
+
+            metrics["motionGroupId"] = str(motion_group.get("id") or "")
+            metrics["exerciseName"] = exercise_name
+            metrics["created"] = selected_motion.get("created") or motion_group.get("created") or set_payload.get("created")
+            deceleration_runs.append(metrics)
+
+    return deceleration_runs
 
 
 def append_split_debug(
@@ -872,16 +1071,19 @@ def load_split_payload_for_exercise(
     merged_payload = merge_split_payloads(set_payloads)
     merged_payload["_debug_fetches"] = debug_steps
     merged_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
+    merged_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
     if merged_payload.get("reports"):
         return merged_payload, None
 
     if set_errors:
         exercise_payload["_debug_fetches"] = debug_steps
         exercise_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
+        exercise_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
         return exercise_payload, set_errors[0]
 
     exercise_payload["_debug_fetches"] = debug_steps
     exercise_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
+    exercise_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
     return exercise_payload, None
 
 
@@ -1867,6 +2069,184 @@ def build_non_normative_split_pdf(
     return bytes(pdf.output(dest="S"))
 
 
+def make_deceleration_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
+    samples = run.get("plotSamples") or []
+    fig, ax = plt.subplots(figsize=(5.8, 3.8))
+
+    if samples:
+        times = [float(sample.get("t_rel") or 0) for sample in samples]
+        speeds = [float(sample.get("speed_mps") or 0) for sample in samples]
+        accelerations = [float(sample.get("acceleration_mps2") or 0) for sample in samples]
+        start_index = int(run.get("startIndex") or 0)
+        stop_index = int(run.get("stopIndex") or 0)
+        mid_index = int(run.get("midIndex") or start_index)
+        v_stop = float(run.get("vStop") or DECEL_V_STOP)
+
+        start_rel_index = max(0, min(start_index, len(samples) - 1))
+        stop_rel_index = max(0, min(stop_index, len(samples) - 1))
+        mid_rel_index = max(0, min(mid_index, len(samples) - 1))
+
+        segment_times = times[start_rel_index:stop_rel_index + 1]
+        segment_speeds = speeds[start_rel_index:stop_rel_index + 1]
+        segment_accelerations = accelerations[start_rel_index:stop_rel_index + 1]
+
+        ax.plot(segment_times, segment_speeds, color=BLUE_HEX, linewidth=2.5, zorder=3)
+
+        vmax_index = max(range(len(segment_speeds)), key=lambda index: segment_speeds[index])
+        decm_index = min(range(len(segment_accelerations)), key=lambda index: segment_accelerations[index])
+        vmax_time = segment_times[vmax_index]
+        vmax_speed = segment_speeds[vmax_index]
+        decm_time = segment_times[decm_index]
+        decm_speed = segment_speeds[decm_index]
+        stop_time = segment_times[-1]
+        stop_speed = segment_speeds[-1]
+        mid_time = times[mid_rel_index]
+
+        ax.scatter(vmax_time, vmax_speed, s=48, color=BLUE_HEX, zorder=5)
+        ax.scatter(stop_time, stop_speed, s=48, color=ORANGE_RGB, zorder=5)
+        ax.scatter(decm_time, decm_speed, s=58, color=RED_RGB, marker="D", zorder=6)
+
+        ax.annotate("VMax", (vmax_time, vmax_speed), xytext=(6, 6), textcoords="offset points", fontsize=9)
+        ax.annotate("Stop", (stop_time, stop_speed), xytext=(6, 6), textcoords="offset points", fontsize=9)
+        ax.annotate(
+            f"DecM\n{format_decimal(run.get('DecM'))}",
+            (decm_time, decm_speed),
+            xytext=(8, -14),
+            textcoords="offset points",
+            fontsize=8,
+            ha="left",
+            va="top",
+        )
+
+        ax.axvspan(segment_times[0], mid_time, color=BLUE_HEX, alpha=0.12, zorder=1)
+        ax.axvspan(mid_time, stop_time, color=ORANGE_RGB, alpha=0.10, zorder=1)
+        ax.axvline(mid_time, linestyle="--", linewidth=1.1, color="#6b7280", alpha=0.85)
+        ax.axvline(stop_time, linestyle="--", linewidth=1.0, color="#6b7280", alpha=0.7)
+        ax.axhline(v_stop, linestyle=":", linewidth=1.0, color="#6b7280", alpha=0.6)
+
+        zone_y = max(segment_speeds) * 0.5 if segment_speeds else 0
+        ax.text((segment_times[0] + mid_time) / 2, zone_y, "Early dec", ha="center", va="top", fontsize=9, weight="bold")
+        ax.text((mid_time + stop_time) / 2, zone_y, "Late dec", ha="center", va="top", fontsize=9, weight="bold")
+
+        ax.annotate(
+            "",
+            xy=(stop_time, stop_speed),
+            xytext=(segment_times[0], stop_speed),
+            arrowprops=dict(arrowstyle="<->", lw=1.3, alpha=0.9, color="#252423"),
+        )
+        ax.text(
+            stop_time / 2,
+            stop_speed + (max(segment_speeds) - min(segment_speeds)) * 0.08,
+            f"TTS = {format_decimal(run.get('TTS'))} s",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            weight="bold",
+        )
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_xlabel("Čas [s]")
+    ax.set_ylabel("Rýchlosť [m/s]")
+    ax.set_title("Deceleračný priebeh", fontsize=10)
+    ax.grid(True, linestyle="--", alpha=0.18)
+    ax.margins(x=0.02, y=0.20)
+
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", transparent=True)
+    buf.seek(0)
+    plt.close(fig)
+    return buf
+
+
+def build_non_normative_deceleration_pdf(
+    run: dict[str, Any],
+    player_name: str,
+    exercise_name: str,
+    logo_bytes: bytes | None,
+    player_photo_bytes: bytes | None,
+) -> bytes:
+    chart_buf = make_deceleration_speed_time_plot(run)
+    pdf = FPDF("L", "mm", "A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    font_family = configure_pdf_font(pdf)
+
+    left_x = 14
+    left_w = 126
+    right_x = 154
+    right_w = 129
+    top_y = 18
+    subtitle_y = 29
+    exercise_y = 39
+    chart_y = 56
+    chart_w = left_w
+    photo_w = 46
+    photo_x = right_x + (right_w - photo_w) / 2
+    photo_y = 14
+    logo_w = 32
+    logo_x = right_x + right_w - logo_w - 4
+    logo_y = 14
+    metrics_y = 86
+    rs_logo_w = 36
+    rs_logo_x = pdf.w - rs_logo_w - 10
+    rs_logo_y = pdf.h - 15
+
+    if logo_bytes:
+        pdf.image(io.BytesIO(logo_bytes), x=logo_x, y=logo_y, w=logo_w)
+
+    pdf.set_text_color(*BLACK_RGB)
+    pdf.set_font(font_family, "", 24)
+    pdf.set_xy(left_x, top_y)
+    pdf.cell(0, 10, player_name, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_text_color(128, 128, 128)
+    pdf.set_font(font_family, "", 12)
+    pdf.set_xy(left_x, subtitle_y)
+    pdf.cell(0, 10, "Deceleračný profil", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_font(font_family, "", 11)
+    pdf.set_xy(left_x, exercise_y)
+    pdf.cell(0, 10, exercise_name, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.image(chart_buf, x=left_x, y=chart_y, w=chart_w)
+
+    if player_photo_bytes:
+        pdf.image(io.BytesIO(player_photo_bytes), x=photo_x, y=photo_y, w=photo_w, h=photo_w, keep_aspect_ratio=True)
+
+    cell_w = 24
+    cell_h = 12
+    cell_h_sub = 7
+    row_gap = 18
+    col_gap = 28
+    metrics_block_w = cell_w * 3 + 2 * (col_gap - cell_w)
+    data_x = right_x + (right_w - metrics_block_w) / 2
+
+    pdf.set_fill_color(*BLUE_RGB)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font(font_family, "", 12)
+
+    rounded_corner_cell(pdf, data_x, metrics_y, cell_w, cell_h, format_decimal(run.get("averageDeceleration")))
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y, cell_w, cell_h, format_decimal(run.get("DecM")))
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y, cell_w, cell_h, format_decimal(run.get("VMax")))
+    rounded_corner_cell(pdf, data_x, metrics_y + row_gap, cell_w, cell_h, format_decimal(run.get("TTS")))
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap, cell_w, cell_h, format_decimal(run.get("DTS")))
+
+    pdf.set_font(font_family, "", 8)
+    pdf.set_text_color(220, 220, 220)
+    rounded_corner_cell(pdf, data_x, metrics_y + 9, cell_w, cell_h_sub, "AverageDeceleration")
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + 9, cell_w, cell_h_sub, "DecM")
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + 9, cell_w, cell_h_sub, "VMax")
+    rounded_corner_cell(pdf, data_x, metrics_y + row_gap + 9, cell_w, cell_h_sub, "TTS")
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, "DTS")
+
+    if RS_LOGO_PATH.is_file():
+        pdf.image(str(RS_LOGO_PATH), x=rs_logo_x, y=rs_logo_y, w=rs_logo_w)
+
+    return bytes(pdf.output(dest="S"))
+
+
 def build_non_normative_fv_pdf(
     report: dict[str, Any],
     player_name: str,
@@ -2331,6 +2711,65 @@ def render_split_export_dialog(
     )
 
 
+@st.dialog("Deceleration PDF export")
+def render_deceleration_export_dialog(
+    exercise: dict[str, Any],
+    payload: dict[str, Any],
+    client: dict[str, Any],
+) -> None:
+    deceleration_runs = payload.get("_deceleration_runs") or []
+    if not deceleration_runs:
+        st.info("No deceleration runs are available for PDF export.")
+        return
+
+    run_options = {
+        (
+            f"Run {index + 1} | AvgDec {format_decimal(run.get('averageDeceleration'))} | "
+            f"VMax {format_decimal(run.get('VMax'))}"
+        ): run
+        for index, run in enumerate(deceleration_runs)
+    }
+
+    st.caption("Choose the deceleration run and optional assets for the export.")
+    selected_run_label = st.selectbox(
+        "Run",
+        options=list(run_options.keys()),
+        key=f"decel_run_select_{exercise.get('id')}",
+    )
+    selected_run = run_options[selected_run_label]
+
+    logo_bytes = render_logo_library_selector(f"decel_logo_{exercise.get('id')}")
+    export_name = format_optional_value(client.get("displayName"))
+    player_client_id = str(client.get("id") or "")
+    player_photo_bytes = render_player_photo_selector(
+        f"decel_player_photo_{exercise.get('id')}",
+        player_client_id,
+    ) if player_client_id else None
+
+    exercise_name = str(
+        selected_run.get("exerciseName")
+        or exercise.get("name")
+        or exercise.get("exerciseTypeName")
+        or "Deceleration"
+    )
+    pdf_bytes = build_non_normative_deceleration_pdf(
+        selected_run,
+        export_name,
+        exercise_name,
+        logo_bytes,
+        player_photo_bytes,
+    )
+    file_name = f"{safe_filename(export_name)}_{safe_filename(str(exercise.get('id')))}_deceleration_profile.pdf"
+    st.download_button(
+        "Download deceleration PDF",
+        data=pdf_bytes,
+        file_name=file_name,
+        mime="application/pdf",
+        key=f"decel_pdf_download_{exercise.get('id')}",
+        width="stretch",
+    )
+
+
 def render_fv_profile(exercise: dict[str, Any], payload: dict[str, Any], client: dict[str, Any]) -> None:
     reports = payload.get("reports") or []
     failed_reports = payload.get("failedReports") or []
@@ -2420,6 +2859,70 @@ def render_split_profile(exercise: dict[str, Any], payload: dict[str, Any], clie
         st.info("No split rows were returned for this exercise.")
 
 
+def render_deceleration_profile(
+    exercise: dict[str, Any],
+    payload: dict[str, Any],
+    client: dict[str, Any],
+) -> None:
+    deceleration_runs = payload.get("_deceleration_runs") or []
+
+    st.markdown("### Deceleračný profil")
+
+    top_col1, top_col2, top_col3 = st.columns(3)
+    top_col1.metric("Runs", len(deceleration_runs))
+    top_col2.metric("Threshold", format_decimal(DECEL_ACC_THRESHOLD))
+    top_col3.metric("Stop speed", format_decimal(DECEL_V_STOP))
+
+    if deceleration_runs:
+        if st.button(
+            "Open deceleration PDF export",
+            key=f"decel_export_open_top_{exercise.get('id')}",
+            width="stretch",
+        ):
+            render_deceleration_export_dialog(exercise, payload, client)
+
+        preview_options = {
+            (
+                f"Run {index + 1} | AvgDec {format_decimal(run.get('averageDeceleration'))} | "
+                f"VMax {format_decimal(run.get('VMax'))}"
+            ): run
+            for index, run in enumerate(deceleration_runs)
+        }
+        selected_preview_label = st.selectbox(
+            "Preview run",
+            options=list(preview_options.keys()),
+            key=f"decel_preview_{exercise.get('id')}",
+        )
+        selected_run = preview_options[selected_preview_label]
+
+        chart_col, info_col = st.columns([1.45, 1], vertical_alignment="top")
+        with chart_col:
+            st.image(make_deceleration_speed_time_plot(selected_run), use_container_width=True)
+        with info_col:
+            exercise_name = str(
+                selected_run.get("exerciseName")
+                or exercise.get("name")
+                or exercise.get("exerciseTypeName")
+                or "-"
+            )
+            st.caption(exercise_name)
+            st.dataframe(
+                [
+                    {
+                        "AverageDeceleration": format_decimal(selected_run.get("averageDeceleration")),
+                        "DecM": format_decimal(selected_run.get("DecM")),
+                        "VMax": format_decimal(selected_run.get("VMax")),
+                        "TTS": format_decimal(selected_run.get("TTS")),
+                        "DTS": format_decimal(selected_run.get("DTS")),
+                    }
+                ],
+                width="stretch",
+                hide_index=True,
+            )
+    else:
+        st.info("No valid deceleration runs were derived from the available training data.")
+
+
 def render_session_detail_content(
     session_detail: dict[str, Any],
     client_lookup: dict[str, dict[str, Any]],
@@ -2489,6 +2992,7 @@ def render_session_detail_content(
                     payload = st.session_state["exercise_report_cache"].get(cache_key)
                 if payload:
                     render_split_profile(exercise, payload, client)
+                    render_deceleration_profile(exercise, payload, client)
     else:
         st.info("No exercises were returned for this session.")
 
