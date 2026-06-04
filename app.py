@@ -2923,6 +2923,26 @@ def render_deceleration_profile(
         st.info("No valid deceleration runs were derived from the available training data.")
 
 
+def render_deceleration_debug(
+    exercise: dict[str, Any],
+    payload: dict[str, Any] | None,
+) -> None:
+    with st.expander(f"Debug deceleration fetch: {exercise.get('exerciseTypeName') or exercise.get('name') or exercise.get('id')}"):
+        debug_info = {
+            "exerciseId": exercise.get("id"),
+            "exerciseName": exercise.get("name"),
+            "exerciseTypeName": exercise.get("exerciseTypeName"),
+            "setIds": [str(exercise_set.get("id") or "") for exercise_set in (exercise.get("sets") or [])],
+            "hasPayload": bool(payload),
+            "reportsCount": len((payload or {}).get("reports") or []),
+            "derivedRunsCount": len((payload or {}).get("_derived_runs") or []),
+            "decelerationRunsCount": len((payload or {}).get("_deceleration_runs") or []),
+            "debugFetches": (payload or {}).get("_debug_fetches") or [],
+            "decelerationRuns": (payload or {}).get("_deceleration_runs") or [],
+        }
+        st.code(json.dumps(sanitize_for_debug(debug_info), ensure_ascii=False, indent=2), language="json")
+
+
 def render_session_detail_content(
     session_detail: dict[str, Any],
     client_lookup: dict[str, dict[str, Any]],
@@ -3018,6 +3038,7 @@ def render_session_detail_content(
                     load_exercise_report(api_key, str(exercise.get("id") or ""), "split", exercise)
                 payload = st.session_state["exercise_report_cache"].get(cache_key)
 
+            render_deceleration_debug(exercise, payload)
             if payload and (payload.get("_deceleration_runs") or []):
                 render_deceleration_profile(exercise, payload, client)
     else:
