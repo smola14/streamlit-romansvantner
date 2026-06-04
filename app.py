@@ -2955,6 +2955,11 @@ def render_session_detail_content(
             for exercise in exercises
             if str(exercise.get("exerciseTypeName") or "").strip() == "15-0-5"
         ]
+        deceleration_exercises = [
+            exercise
+            for exercise in exercises
+            if str(exercise.get("exerciseTypeName") or "").strip() != "Running (LR)"
+        ]
 
         for exercise in fv_exercises:
             cache_key = f"fv:{exercise.get('id')}"
@@ -2992,7 +2997,29 @@ def render_session_detail_content(
                     payload = st.session_state["exercise_report_cache"].get(cache_key)
                 if payload:
                     render_split_profile(exercise, payload, client)
-                    render_deceleration_profile(exercise, payload, client)
+
+        for exercise in deceleration_exercises:
+            cache_key = f"split:{exercise.get('id')}"
+            if cache_key not in st.session_state["exercise_report_cache"] and api_key:
+                with st.spinner("Loading deceleration profile data..."):
+                    load_exercise_report(api_key, str(exercise.get("id") or ""), "split", exercise)
+
+            error = st.session_state["exercise_report_errors"].get(cache_key)
+            if error:
+                continue
+
+            payload = st.session_state["exercise_report_cache"].get(cache_key)
+            if (
+                payload
+                and "_deceleration_runs" not in payload
+                and api_key
+            ):
+                with st.spinner("Refreshing deceleration debug data..."):
+                    load_exercise_report(api_key, str(exercise.get("id") or ""), "split", exercise)
+                payload = st.session_state["exercise_report_cache"].get(cache_key)
+
+            if payload and (payload.get("_deceleration_runs") or []):
+                render_deceleration_profile(exercise, payload, client)
     else:
         st.info("No exercises were returned for this session.")
 
