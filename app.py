@@ -1033,7 +1033,8 @@ def build_deceleration_runs_from_training_data(set_payloads: list[dict[str, Any]
             if not selected_motion:
                 continue
 
-            samples = decode_sampledata_base64(str(selected_motion.get("sampleData") or ""))
+            sample_data_raw = str(selected_motion.get("sampleData") or "")
+            samples = decode_sampledata_base64(sample_data_raw)
             metrics = compute_deceleration_profile_from_samples(samples)
             if not metrics.get("ok"):
                 continue
@@ -1041,6 +1042,12 @@ def build_deceleration_runs_from_training_data(set_payloads: list[dict[str, Any]
             metrics["motionGroupId"] = str(motion_group.get("id") or "")
             metrics["exerciseName"] = exercise_name
             metrics["created"] = selected_motion.get("created") or motion_group.get("created") or set_payload.get("created")
+            metrics["_debug"] = {
+                "source": "raw_samples",
+                "hasSampleData": bool(sample_data_raw),
+                "sampleDataLength": len(sample_data_raw),
+                "decodedSampleCount": len(samples),
+            }
             deceleration_runs.append(metrics)
 
     return deceleration_runs
@@ -1169,6 +1176,13 @@ def build_fallback_deceleration_runs(
                 "midIndex": mid_index,
                 "plotSamples": plot_samples,
                 "isFallback": True,
+                "_debug": {
+                    "source": "fallback_from_split",
+                    "hasSampleData": False,
+                    "sampleDataLength": 0,
+                    "decodedSampleCount": 0,
+                    "splitPointCount": len(plot_samples),
+                },
             }
         )
 
@@ -3182,6 +3196,15 @@ def render_deceleration_debug(
             "reportsCount": len((payload or {}).get("reports") or []),
             "derivedRunsCount": len((payload or {}).get("_derived_runs") or []),
             "decelerationRunsCount": len((payload or {}).get("_deceleration_runs") or []),
+            "decelerationRunDebug": [
+                {
+                    "motionGroupId": run.get("motionGroupId"),
+                    "plotSampleCount": len(run.get("plotSamples") or []),
+                    "isFallback": bool(run.get("isFallback")),
+                    "debug": run.get("_debug") or {},
+                }
+                for run in ((payload or {}).get("_deceleration_runs") or [])
+            ],
             "debugFetches": (payload or {}).get("_debug_fetches") or [],
             "decelerationRuns": (payload or {}).get("_deceleration_runs") or [],
         }
