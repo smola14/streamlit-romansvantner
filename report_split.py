@@ -23,8 +23,34 @@ from report_common import (
     rounded_corner_cell,
 )
 
+SPLIT_TEXT = {
+    "English": {
+        "title": "15-0-5 Split Profile",
+        "chart_title": "Speed during run",
+        "x_label": "Time [s]",
+        "y_label": "Speed [m/s]",
+        "total_time": "Total time [s]",
+        "max_speed_ms": "Max speed [m/s]",
+        "max_speed_kmh": "Max speed [km/h]",
+        "max_acceleration": "Max acceleration [m/s²]",
+        "max_deceleration": "Max deceleration [m/s²]",
+        "deceleration_time": "Deceleration time [s]",
+    },
+    "Slovak": {
+        "title": "15-0-5 Split profil",
+        "chart_title": "Rýchlosť počas runu",
+        "x_label": "Čas [s]",
+        "y_label": "Rýchlosť [m/s]",
+        "total_time": "Celkový čas [s]",
+        "max_speed_ms": "Max rýchlosť [m/s]",
+        "max_speed_kmh": "Max rýchlosť [km/h]",
+        "max_acceleration": "Max akcelerácia [m/s²]",
+        "max_deceleration": "Max decelerácia [m/s²]",
+        "deceleration_time": "Čas decelerácie [s]",
+    },
+}
 
-def make_split_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
+def make_split_speed_time_plot(run: dict[str, Any], texts: dict[str, str]) -> io.BytesIO:
     motions = run.get("motions") or []
     fig, ax = plt.subplots(figsize=(5.8, 3.8))
 
@@ -55,9 +81,9 @@ def make_split_speed_time_plot(run: dict[str, Any]) -> io.BytesIO:
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.set_xlabel("Čas [s]")
-    ax.set_ylabel("Rýchlosť [m/s]")
-    ax.set_title("Rýchlosť počas runu", fontsize=10)
+    ax.set_xlabel(texts["x_label"])
+    ax.set_ylabel(texts["y_label"])
+    ax.set_title(texts["chart_title"], fontsize=10)
     ax.grid(True, linestyle="--", alpha=0.18)
 
     buf = io.BytesIO()
@@ -73,8 +99,10 @@ def build_non_normative_split_pdf(
     player_name: str,
     logo_bytes: bytes | None,
     player_photo_bytes: bytes | None,
+    language: str = "English",
 ) -> bytes:
-    chart_buf = make_split_speed_time_plot(run)
+    texts = SPLIT_TEXT.get(language, SPLIT_TEXT["English"])
+    chart_buf = make_split_speed_time_plot(run, texts)
     pdf = FPDF("L", "mm", "A4")
     pdf.set_auto_page_break(auto=False)
     pdf.add_page()
@@ -110,7 +138,7 @@ def build_non_normative_split_pdf(
     pdf.set_text_color(128, 128, 128)
     pdf.set_font(font_family, "", 12)
     pdf.set_xy(left_x, subtitle_y)
-    pdf.cell(0, 10, "Deceleračný profil 15-0-5", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, texts["title"], new_x="LMARGIN", new_y="NEXT")
 
     pdf.image(chart_buf, x=left_x, y=chart_y, w=chart_w)
     if SPLIT_1505_IMAGE_PATH.is_file():
@@ -148,12 +176,12 @@ def build_non_normative_split_pdf(
 
     pdf.set_font(font_family, "", 8)
     pdf.set_text_color(220, 220, 220)
-    rounded_corner_cell(pdf, data_x, metrics_y + 9, cell_w, cell_h_sub, "Celkový čas [s]")
-    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + 9, cell_w, cell_h_sub, "Max rýchlosť [m/s]")
-    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + 9, cell_w, cell_h_sub, "Max rýchlosť [km/h]")
-    rounded_corner_cell(pdf, data_x, metrics_y + row_gap + 9, cell_w, cell_h_sub, "Max akcelerácia [m/s²]")
-    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, "Max decelerácia [m/s²]")
-    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, "Čas decelerácie [s]")
+    rounded_corner_cell(pdf, data_x, metrics_y + 9, cell_w, cell_h_sub, texts["total_time"])
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + 9, cell_w, cell_h_sub, texts["max_speed_ms"])
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + 9, cell_w, cell_h_sub, texts["max_speed_kmh"])
+    rounded_corner_cell(pdf, data_x, metrics_y + row_gap + 9, cell_w, cell_h_sub, texts["max_acceleration"])
+    rounded_corner_cell(pdf, data_x + col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, texts["max_deceleration"])
+    rounded_corner_cell(pdf, data_x + 2 * col_gap, metrics_y + row_gap + 9, cell_w, cell_h_sub, texts["deceleration_time"])
 
     if RS_LOGO_PATH.is_file():
         pdf.image(str(RS_LOGO_PATH), x=rs_logo_x, y=rs_logo_y, w=rs_logo_w)

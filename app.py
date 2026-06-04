@@ -2999,13 +2999,19 @@ def render_split_export_dialog(
     )
     selected_run = run_options[selected_run_label]
 
-    logo_bytes = render_logo_library_selector("shared_logo", "English")
+    export_language = st.selectbox(
+        "Language",
+        options=["English", "Slovak"],
+        key=f"split_export_language_{exercise.get('id')}",
+    )
+
+    logo_bytes = render_logo_library_selector("shared_logo", export_language)
     export_name = format_optional_value(client.get("displayName"))
     player_client_id = str(client.get("id") or "")
     player_photo_bytes = render_player_photo_selector(
         f"shared_player_photo_{player_client_id}",
         player_client_id,
-        "English",
+        export_language,
     ) if player_client_id else None
 
     pdf_bytes = split_build_non_normative_split_pdf(
@@ -3013,6 +3019,7 @@ def render_split_export_dialog(
         export_name,
         logo_bytes,
         player_photo_bytes,
+        export_language,
     )
     file_name = f"{safe_filename(export_name)}_{safe_filename(str(exercise.get('id')))}_1505_profile.pdf"
     st.download_button(
@@ -3189,17 +3196,18 @@ def render_deceleration_profile(
     client: dict[str, Any],
 ) -> None:
     deceleration_runs = payload.get("_deceleration_runs") or []
+    texts = PDF_TEXT["English"]
 
-    st.markdown("### Deceleračný profil")
+    st.markdown(f"### {texts['decel_title']}")
 
     top_col1, top_col2, top_col3 = st.columns(3)
-    top_col1.metric("Runs", len(deceleration_runs))
-    top_col2.metric("Threshold", format_decimal(DECEL_ACC_THRESHOLD))
-    top_col3.metric("Stop speed", format_decimal(DECEL_V_STOP))
+    top_col1.metric(texts["decel_runs"], len(deceleration_runs))
+    top_col2.metric(texts["decel_threshold"], format_decimal(DECEL_ACC_THRESHOLD))
+    top_col3.metric(texts["decel_stop_speed"], format_decimal(DECEL_V_STOP))
 
     if deceleration_runs:
         if st.button(
-            "Open deceleration PDF export",
+            texts["decel_open_export"],
             key=f"decel_export_open_top_{exercise.get('id')}",
             width="stretch",
         ):
@@ -3213,7 +3221,7 @@ def render_deceleration_profile(
             for index, run in enumerate(deceleration_runs)
         }
         selected_preview_label = st.selectbox(
-            "Preview run",
+            texts["decel_preview_run"],
             options=list(preview_options.keys()),
             key=f"decel_preview_{exercise.get('id')}",
         )
@@ -3222,7 +3230,7 @@ def render_deceleration_profile(
         chart_col, info_col = st.columns([1.45, 1], vertical_alignment="top")
         with chart_col:
             st.image(
-                decel_make_deceleration_speed_time_plot(selected_run, PDF_TEXT["Slovak"], "Slovak"),
+                decel_make_deceleration_speed_time_plot(selected_run, texts, "English"),
                 use_container_width=True,
             )
         with info_col:
@@ -3236,18 +3244,18 @@ def render_deceleration_profile(
             st.dataframe(
                 [
                     {
-                        PDF_TEXT["Slovak"]["decel_avg"]: format_decimal(selected_run.get("averageDeceleration")),
-                        PDF_TEXT["Slovak"]["decel_max"]: format_decimal(selected_run.get("DecM")),
-                        PDF_TEXT["Slovak"]["decel_vmax"]: format_decimal(selected_run.get("VMax")),
-                        PDF_TEXT["Slovak"]["decel_tts"]: format_decimal(selected_run.get("TTS")),
-                        PDF_TEXT["Slovak"]["decel_dts"]: format_decimal(selected_run.get("DTS")),
+                        texts["decel_avg"]: format_decimal(selected_run.get("averageDeceleration")),
+                        texts["decel_max"]: format_decimal(selected_run.get("DecM")),
+                        texts["decel_vmax"]: format_decimal(selected_run.get("VMax")),
+                        texts["decel_tts"]: format_decimal(selected_run.get("TTS")),
+                        texts["decel_dts"]: format_decimal(selected_run.get("DTS")),
                     }
                 ],
                 width="stretch",
                 hide_index=True,
             )
     else:
-        st.info("No valid deceleration runs were derived from the available training data.")
+        st.info(texts["decel_no_valid_runs"])
 
 
 def render_deceleration_debug(
