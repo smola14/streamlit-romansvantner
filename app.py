@@ -54,6 +54,7 @@ RS_LOGO_PATH = Path(__file__).resolve().parent / "rs-logo.png"
 SPLIT_1505_IMAGE_PATH = Path(__file__).resolve().parent / "1505.png"
 DECEL_V_STOP = 0.2
 DECEL_ACC_THRESHOLD = -1.5
+DECEL_SAMPLE_FILTER_MODE = "Smooth"
 UPLOADED_LOGOS_DIR = Path(__file__).resolve().parent / "uploaded_logos"
 UPLOADED_PLAYER_PHOTOS_DIR = Path(__file__).resolve().parent / "uploaded_player_photos"
 MAX_LOGO_BYTES = 2 * 1024 * 1024
@@ -699,6 +700,10 @@ def fetch_training_data_set(
         response = requests.get(
             f"{API_BASE_URL}/TrainingData/Set/{set_id}",
             headers=build_headers(api_key),
+            params={
+                "includeSamples": True,
+                "filterMode": DECEL_SAMPLE_FILTER_MODE,
+            },
             timeout=API_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
@@ -1388,13 +1393,6 @@ def render_saved_logo_picker(
         st.caption(texts["no_logo_selected"])
 
     with st.popover(texts["choose_logo"]):
-        if current_selection not in {no_saved_logo_option, choose_logo_option} and st.button(
-            texts["clear_selection"],
-            key=f"{selected_logo_state_key}_clear",
-            width="stretch",
-        ):
-            st.session_state[selected_logo_state_key] = choose_logo_option
-
         for file_name in saved_logos:
             row_col1, row_col2 = st.columns([0.22, 0.78], vertical_alignment="center")
             logo_bytes = load_saved_logo_bytes(file_name)
@@ -1495,6 +1493,14 @@ def render_logo_library_selector(key_prefix: str, language: str = "English") -> 
     with select_col:
         if saved_logos:
             selected_logo = render_saved_logo_picker(saved_logos, selected_logo_state_key, language)
+            if selected_logo not in {no_saved_logo_option, choose_logo_option}:
+                if st.button(
+                    texts["clear_selection"],
+                    key=f"{selected_logo_state_key}_clear_inline",
+                    width="stretch",
+                ):
+                    st.session_state[selected_logo_state_key] = choose_logo_option
+                    st.rerun()
         else:
             st.selectbox(
                 texts["choose_logo"],
