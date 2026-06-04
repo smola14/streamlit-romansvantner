@@ -7,6 +7,7 @@ import io
 import json
 import os
 import struct
+import sys
 import unicodedata
 from collections.abc import Mapping
 from pathlib import Path
@@ -19,26 +20,20 @@ from openpyxl import load_workbook
 import requests
 import streamlit as st
 from fpdf import FPDF
-try:
-    from report_deceleration import (
-        build_non_normative_deceleration_pdf as decel_build_non_normative_deceleration_pdf,
-        make_deceleration_speed_time_plot as decel_make_deceleration_speed_time_plot,
-    )
-    from report_fv import (
-        build_non_normative_fv_pdf as fv_build_non_normative_fv_pdf,
-        build_normative_fv_pdf as fv_build_normative_fv_pdf,
-    )
-    from report_split import build_non_normative_split_pdf as split_build_non_normative_split_pdf
-except ModuleNotFoundError:
-    from app.report_deceleration import (
-        build_non_normative_deceleration_pdf as decel_build_non_normative_deceleration_pdf,
-        make_deceleration_speed_time_plot as decel_make_deceleration_speed_time_plot,
-    )
-    from app.report_fv import (
-        build_non_normative_fv_pdf as fv_build_non_normative_fv_pdf,
-        build_normative_fv_pdf as fv_build_normative_fv_pdf,
-    )
-    from app.report_split import build_non_normative_split_pdf as split_build_non_normative_split_pdf
+
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from report_deceleration import (
+    build_non_normative_deceleration_pdf as decel_build_non_normative_deceleration_pdf,
+    make_deceleration_speed_time_plot as decel_make_deceleration_speed_time_plot,
+)
+from report_fv import (
+    build_non_normative_fv_pdf as fv_build_non_normative_fv_pdf,
+    build_normative_fv_pdf as fv_build_normative_fv_pdf,
+)
+from report_split import build_non_normative_split_pdf as split_build_non_normative_split_pdf
 
 
 API_BASE_URL = os.getenv("API1080_BASE_URL", "https://publicapi.1080motion.com").rstrip("/")
