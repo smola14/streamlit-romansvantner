@@ -949,6 +949,57 @@ def load_saved_logo_bytes(file_name: str) -> bytes | None:
     return path.read_bytes()
 
 
+def render_saved_logo_picker(
+    saved_logos: list[str],
+    selected_logo_state_key: str,
+) -> str:
+    current_selection = st.session_state.get(selected_logo_state_key, "Choose logo")
+    current_logo_bytes = (
+        load_saved_logo_bytes(current_selection)
+        if current_selection not in {"No saved logo", "Choose logo"}
+        else None
+    )
+
+    if current_logo_bytes:
+        preview_col, label_col = st.columns([0.2, 0.8], vertical_alignment="center")
+        preview_col.image(current_logo_bytes, width=32)
+        label_col.caption(f"Selected logo: {current_selection}")
+    else:
+        st.caption("No logo selected")
+
+    with st.popover("Choose logo"):
+        if current_selection not in {"No saved logo", "Choose logo"} and st.button(
+            "Clear selection",
+            key=f"{selected_logo_state_key}_clear",
+            width="stretch",
+        ):
+            st.session_state[selected_logo_state_key] = "Choose logo"
+            st.rerun()
+
+        for file_name in saved_logos:
+            row_col1, row_col2 = st.columns([0.22, 0.78], vertical_alignment="center")
+            logo_bytes = load_saved_logo_bytes(file_name)
+            if logo_bytes:
+                row_col1.image(logo_bytes, width=28)
+            else:
+                row_col1.caption("N/A")
+
+            button_label = file_name
+            if file_name == current_selection:
+                button_label = f"{file_name}  [selected]"
+
+            if row_col2.button(
+                button_label,
+                key=f"{selected_logo_state_key}_{file_name}",
+                width="stretch",
+                type="primary" if file_name == current_selection else "secondary",
+            ):
+                st.session_state[selected_logo_state_key] = file_name
+                st.rerun()
+
+    return st.session_state.get(selected_logo_state_key, "Choose logo")
+
+
 def ensure_uploaded_player_photos_dir() -> None:
     UPLOADED_PLAYER_PHOTOS_DIR.mkdir(exist_ok=True)
 
@@ -1020,11 +1071,17 @@ def render_logo_library_selector(key_prefix: str) -> bytes | None:
 
     st.markdown("##### Branding")
     select_col, upload_col = st.columns([1, 1])
-    selected_logo = select_col.selectbox(
-        "Choose logo",
-        options=options,
-        key=selected_logo_state_key,
-    )
+    with select_col:
+        if saved_logos:
+            selected_logo = render_saved_logo_picker(saved_logos, selected_logo_state_key)
+        else:
+            st.selectbox(
+                "Choose logo",
+                options=options,
+                key=selected_logo_state_key,
+                disabled=True,
+            )
+            selected_logo = "No saved logo"
     uploaded_logo = upload_col.file_uploader(
         "Upload new logo",
         type=["png", "jpg", "jpeg", "webp"],
