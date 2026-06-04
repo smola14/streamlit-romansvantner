@@ -943,6 +943,43 @@ def compute_deceleration_profile_from_samples(
     }
 
 
+def build_vmax_stop_plot_samples_from_raw(
+    samples: list[dict[str, float]],
+    *,
+    v_stop: float = DECEL_V_STOP,
+) -> list[dict[str, float]]:
+    ordered_samples = sorted(samples, key=lambda sample: float(sample.get("time_s") or 0))
+    if not ordered_samples:
+        return []
+
+    peak_index = max(
+        range(len(ordered_samples)),
+        key=lambda index: float(ordered_samples[index].get("speed_mps") or 0),
+    )
+    stop_index = next(
+        (
+            index
+            for index in range(peak_index, len(ordered_samples))
+            if float(ordered_samples[index].get("speed_mps") or 0) <= v_stop
+        ),
+        len(ordered_samples) - 1,
+    )
+    if stop_index <= peak_index:
+        return []
+
+    segment = ordered_samples[peak_index:stop_index + 1]
+    start_time = float(segment[0].get("time_s") or 0)
+    return [
+        {
+            "time_s": float(sample.get("time_s") or 0),
+            "t_rel": float(sample.get("time_s") or 0) - start_time,
+            "speed_mps": float(sample.get("speed_mps") or 0),
+            "acceleration_mps2": float(sample.get("acceleration_mps2") or 0),
+        }
+        for sample in segment
+    ]
+
+
 def build_derived_split_runs_from_training_data(set_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     derived_runs: list[dict[str, Any]] = []
 
@@ -1012,8 +1049,11 @@ def build_derived_split_runs_from_training_data(set_payloads: list[dict[str, Any
     return derived_runs
 
 
-def build_deceleration_runs_from_training_data(set_payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_deceleration_runs_from_training_data(
+    set_payloads: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     deceleration_runs: list[dict[str, Any]] = []
+    raw_failures: list[dict[str, Any]] = []
 
     for set_payload in set_payloads:
         exercise_name = str(set_payload.get("exerciseName") or "")
@@ -1037,6 +1077,27 @@ def build_deceleration_runs_from_training_data(set_payloads: list[dict[str, Any]
             samples = decode_sampledata_base64(sample_data_raw)
             metrics = compute_deceleration_profile_from_samples(samples)
             if not metrics.get("ok"):
+                raw_failures.append(
+                    {
+                        "motionGroupId": str(motion_group.get("id") or ""),
+                        "exerciseName": exercise_name,
+                        "created": selected_motion.get("created") or motion_group.get("created") or set_payload.get("created"),
+                        "hasSampleData": bool(sample_data_raw),
+                        "sampleDataLength": len(sample_data_raw),
+                        "decodedSampleCount": len(samples),
+                        "reason": metrics.get("reason") or "unknown",
+                        "peakSpeed": max(
+                            (float(sample.get("speed_mps") or 0) for sample in samples),
+                            default=0.0,
+                        ),
+                        "endSpeed": float((samples[-1].get("speed_mps") or 0)) if samples else None,
+                        "minAcceleration": min(
+                            (float(sample.get("acceleration_mps2") or 0) for sample in samples),
+                            default=None,
+                        ),
+                        "rawPlotSampleCount": len(build_vmax_stop_plot_samples_from_raw(samples)),
+                    }
+                )
                 continue
 
             metrics["motionGroupId"] = str(motion_group.get("id") or "")
@@ -1050,7 +1111,7 @@ def build_deceleration_runs_from_training_data(set_payloads: list[dict[str, Any]
             }
             deceleration_runs.append(metrics)
 
-    return deceleration_runs
+    return deceleration_runs, raw_failures
 
 
 def build_fallback_deceleration_runs(
@@ -1094,69 +1155,75 @@ def build_fallback_deceleration_runs(
             continue
 
         average_deceleration = max((top_speed - DECEL_V_STOP) / deceleration_time, 0.0)
-        anchor_samples: list[dict[str, float]] = []
-        elapsed_time = 0.0
-        splits = report.get("splits") or []
-        first_speed = float((splits[0] or {}).get("topSpeed") or top_speed) if splits else top_speed
-        anchor_samples.append(
-            {
-                "time_s": 0.0,
-                "t_rel": 0.0,
-                "speed_mps": first_speed,
-                "acceleration_mps2": 0.0,
-            }
-        )
-        for split in splits:
-            split_time = float(split.get("time") or 0)
-            top_split_speed = float(split.get("topSpeed") or 0)
-            elapsed_time += split_time
-            anchor_samples.append(
-                {
-                    "time_s": elapsed_time,
-                    "t_rel": elapsed_time,
-                    "speed_mps": top_split_speed,
-                    "acceleration_mps2": 0.0,
-                }
-            )
-        final_time = max(elapsed_time, deceleration_time)
-        if not anchor_samples or anchor_samples[-1]["speed_mps"] > DECEL_V_STOP:
-            anchor_samples.append(
-                {
-                    "time_s": final_time,
-                    "t_rel": final_time,
-                    "speed_mps": DECEL_V_STOP,
-                    "acceleration_mps2": 0.0,
-                }
-            )
+        sample_data_raw = str(motion.get("sampleData") or "")
+        raw_samples = decode_sampledata_base64(sample_data_raw) if sample_data_raw else []
+        plot_samples = build_vmax_stop_plot_samples_from_raw(raw_samples)
+        plot_source = "fallback_from_raw_samples"
 
-        plot_samples: list[dict[str, float]] = []
-        for index, current in enumerate(anchor_samples):
-            plot_samples.append(dict(current))
-            if index == len(anchor_samples) - 1:
-                continue
-            next_sample = anchor_samples[index + 1]
-            subdivisions = 5
-            for step in range(1, subdivisions):
-                ratio = step / subdivisions
-                interpolated_time = current["t_rel"] + (next_sample["t_rel"] - current["t_rel"]) * ratio
-                interpolated_speed = current["speed_mps"] + (next_sample["speed_mps"] - current["speed_mps"]) * ratio
-                plot_samples.append(
+        if not plot_samples:
+            plot_source = "fallback_from_split"
+            anchor_samples: list[dict[str, float]] = []
+            elapsed_time = 0.0
+            splits = report.get("splits") or []
+            first_speed = float((splits[0] or {}).get("topSpeed") or top_speed) if splits else top_speed
+            anchor_samples.append(
+                {
+                    "time_s": 0.0,
+                    "t_rel": 0.0,
+                    "speed_mps": first_speed,
+                    "acceleration_mps2": 0.0,
+                }
+            )
+            for split in splits:
+                split_time = float(split.get("time") or 0)
+                top_split_speed = float(split.get("topSpeed") or 0)
+                elapsed_time += split_time
+                anchor_samples.append(
                     {
-                        "time_s": interpolated_time,
-                        "t_rel": interpolated_time,
-                        "speed_mps": interpolated_speed,
+                        "time_s": elapsed_time,
+                        "t_rel": elapsed_time,
+                        "speed_mps": top_split_speed,
+                        "acceleration_mps2": 0.0,
+                    }
+                )
+            final_time = max(elapsed_time, deceleration_time)
+            if not anchor_samples or anchor_samples[-1]["speed_mps"] > DECEL_V_STOP:
+                anchor_samples.append(
+                    {
+                        "time_s": final_time,
+                        "t_rel": final_time,
+                        "speed_mps": DECEL_V_STOP,
                         "acceleration_mps2": 0.0,
                     }
                 )
 
+            plot_samples = []
+            for index, current in enumerate(anchor_samples):
+                plot_samples.append(dict(current))
+                if index == len(anchor_samples) - 1:
+                    continue
+                next_sample = anchor_samples[index + 1]
+                subdivisions = 5
+                for step in range(1, subdivisions):
+                    ratio = step / subdivisions
+                    interpolated_time = current["t_rel"] + (next_sample["t_rel"] - current["t_rel"]) * ratio
+                    interpolated_speed = current["speed_mps"] + (next_sample["speed_mps"] - current["speed_mps"]) * ratio
+                    plot_samples.append(
+                        {
+                            "time_s": interpolated_time,
+                            "t_rel": interpolated_time,
+                            "speed_mps": interpolated_speed,
+                            "acceleration_mps2": 0.0,
+                        }
+                    )
+
         if plot_samples:
             decm_time = min(deceleration_time, plot_samples[-1]["t_rel"])
-            if plot_samples:
-                nearest_index = min(
-                    range(len(plot_samples)),
-                    key=lambda index: abs(plot_samples[index]["t_rel"] - decm_time),
-                )
-                plot_samples[nearest_index]["acceleration_mps2"] = -max_deceleration
+            nearest_index = min(
+                range(len(plot_samples)),
+                key=lambda index: abs(plot_samples[index]["t_rel"] - decm_time),
+            )
+            plot_samples[nearest_index]["acceleration_mps2"] = -max_deceleration
 
         mid_index = len(plot_samples) // 2 if plot_samples else 0
         fallback_runs.append(
@@ -1177,10 +1244,10 @@ def build_fallback_deceleration_runs(
                 "plotSamples": plot_samples,
                 "isFallback": True,
                 "_debug": {
-                    "source": "fallback_from_split",
-                    "hasSampleData": False,
-                    "sampleDataLength": 0,
-                    "decodedSampleCount": 0,
+                    "source": plot_source,
+                    "hasSampleData": bool(sample_data_raw),
+                    "sampleDataLength": len(sample_data_raw),
+                    "decodedSampleCount": len(raw_samples),
                     "splitPointCount": len(plot_samples),
                 },
             }
@@ -1302,7 +1369,7 @@ def load_split_payload_for_exercise(
 
     response_payload = exercise_payload if exercise_has_reports else merge_split_payloads(set_payloads)
     derived_runs = build_derived_split_runs_from_training_data(training_set_payloads)
-    deceleration_runs = build_deceleration_runs_from_training_data(training_set_payloads)
+    deceleration_runs, raw_failures = build_deceleration_runs_from_training_data(training_set_payloads)
     if not deceleration_runs:
         deceleration_runs = build_fallback_deceleration_runs(
             response_payload.get("reports") or [],
@@ -1311,6 +1378,7 @@ def load_split_payload_for_exercise(
     response_payload["_debug_fetches"] = debug_steps
     response_payload["_derived_runs"] = derived_runs
     response_payload["_deceleration_runs"] = deceleration_runs
+    response_payload["_deceleration_raw_failures"] = raw_failures
     if response_payload.get("reports"):
         return response_payload, None
 
@@ -3205,6 +3273,7 @@ def render_deceleration_debug(
                 }
                 for run in ((payload or {}).get("_deceleration_runs") or [])
             ],
+            "decelerationRawFailures": (payload or {}).get("_deceleration_raw_failures") or [],
             "debugFetches": (payload or {}).get("_debug_fetches") or [],
             "decelerationRuns": (payload or {}).get("_deceleration_runs") or [],
         }
