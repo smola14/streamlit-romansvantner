@@ -958,6 +958,103 @@ def build_deceleration_runs_from_training_data(set_payloads: list[dict[str, Any]
     return deceleration_runs
 
 
+def build_fallback_deceleration_runs(
+    split_reports: list[dict[str, Any]],
+    set_payloads: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not split_reports or not set_payloads:
+        return []
+
+    motion_group_lookup: dict[str, dict[str, Any]] = {}
+    exercise_name_lookup: dict[str, str] = {}
+    for set_payload in set_payloads:
+        exercise_name = str(set_payload.get("exerciseName") or "")
+        for motion_group in set_payload.get("motionGroups") or []:
+            motion_group_id = str(motion_group.get("id") or "")
+            if not motion_group_id:
+                continue
+            motion_group_lookup[motion_group_id] = motion_group
+            exercise_name_lookup[motion_group_id] = exercise_name
+
+    fallback_runs: list[dict[str, Any]] = []
+    for report in split_reports:
+        motion_group_id = str(report.get("motionGroupId") or "")
+        motion_group = motion_group_lookup.get(motion_group_id)
+        if not motion_group:
+            continue
+
+        motions = motion_group.get("motions") or []
+        if not motions:
+            continue
+        motion = motions[0]
+        accel_decel_stats = motion.get("accelDecelStats") or {}
+        top_speed = float(motion.get("topSpeed") or 0)
+        deceleration_time = float(accel_decel_stats.get("decelerationTime") or 0)
+        max_deceleration = float(accel_decel_stats.get("decelerationMax") or 0)
+        total_distance = float(motion.get("totalDistance") or 0)
+        top_speed_position = float(accel_decel_stats.get("topSpeedPosition") or 0)
+        distance_to_stop = max(total_distance - top_speed_position, 0.0)
+
+        if deceleration_time <= 0 or max_deceleration <= 0 or top_speed <= 0:
+            continue
+
+        average_deceleration = max((top_speed - DECEL_V_STOP) / deceleration_time, 0.0)
+        plot_samples: list[dict[str, float]] = []
+        elapsed_time = 0.0
+        for split in report.get("splits") or []:
+            split_time = float(split.get("time") or 0)
+            top_split_speed = float(split.get("topSpeed") or 0)
+            plot_samples.append(
+                {
+                    "time_s": elapsed_time,
+                    "t_rel": elapsed_time,
+                    "speed_mps": top_split_speed,
+                    "acceleration_mps2": 0.0,
+                }
+            )
+            elapsed_time += split_time
+            plot_samples.append(
+                {
+                    "time_s": elapsed_time,
+                    "t_rel": elapsed_time,
+                    "speed_mps": top_split_speed,
+                    "acceleration_mps2": 0.0,
+                }
+            )
+
+        if plot_samples:
+            decm_time = min(deceleration_time, plot_samples[-1]["t_rel"])
+            if plot_samples:
+                nearest_index = min(
+                    range(len(plot_samples)),
+                    key=lambda index: abs(plot_samples[index]["t_rel"] - decm_time),
+                )
+                plot_samples[nearest_index]["acceleration_mps2"] = -max_deceleration
+
+        mid_index = len(plot_samples) // 2 if plot_samples else 0
+        fallback_runs.append(
+            {
+                "motionGroupId": motion_group_id,
+                "exerciseName": exercise_name_lookup.get(motion_group_id, ""),
+                "created": motion.get("created") or motion_group.get("created"),
+                "averageDeceleration": average_deceleration,
+                "DecM": max_deceleration,
+                "VMax": top_speed,
+                "TTS": deceleration_time,
+                "DTS": distance_to_stop,
+                "vStart": top_speed,
+                "vStop": DECEL_V_STOP,
+                "startIndex": 0,
+                "stopIndex": max(len(plot_samples) - 1, 0),
+                "midIndex": mid_index,
+                "plotSamples": plot_samples,
+                "isFallback": True,
+            }
+        )
+
+    return fallback_runs
+
+
 def append_split_debug(
     debug_steps: list[dict[str, Any]],
     step: str,
@@ -1070,21 +1167,22 @@ def load_split_payload_for_exercise(
             set_payloads.append(set_payload)
 
     response_payload = exercise_payload if exercise_has_reports else merge_split_payloads(set_payloads)
+    derived_runs = build_derived_split_runs_from_training_data(training_set_payloads)
+    deceleration_runs = build_deceleration_runs_from_training_data(training_set_payloads)
+    if not deceleration_runs:
+        deceleration_runs = build_fallback_deceleration_runs(
+            response_payload.get("reports") or [],
+            training_set_payloads,
+        )
     response_payload["_debug_fetches"] = debug_steps
-    response_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
-    response_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
+    response_payload["_derived_runs"] = derived_runs
+    response_payload["_deceleration_runs"] = deceleration_runs
     if response_payload.get("reports"):
         return response_payload, None
 
     if set_errors:
-        response_payload["_debug_fetches"] = debug_steps
-        response_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
-        response_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
         return response_payload, set_errors[0]
 
-    response_payload["_debug_fetches"] = debug_steps
-    response_payload["_derived_runs"] = build_derived_split_runs_from_training_data(training_set_payloads)
-    response_payload["_deceleration_runs"] = build_deceleration_runs_from_training_data(training_set_payloads)
     return response_payload, None
 
 
