@@ -722,14 +722,14 @@ def fetch_split_set(
 
 
 def fetch_training_data_set(
-    api_key: str, set_id: str
+    api_key: str, set_id: str, include_samples: bool = True
 ) -> tuple[dict[str, Any] | None, str | None]:
     try:
         response = requests.get(
             f"{API_BASE_URL}/TrainingData/Set/{set_id}",
             headers=build_headers(api_key),
             params={
-                "includeSamples": True,
+                "includeSamples": include_samples,
                 "filterMode": DECEL_SAMPLE_FILTER_MODE,
             },
             timeout=API_TIMEOUT_SECONDS,
@@ -2873,6 +2873,61 @@ def get_report_v0(report: dict[str, Any]) -> float:
     return parse_float(report.get("v0")) or float("-inf")
 
 
+def normalize_load_key(value: Any) -> str:
+    numeric = parse_float(value)
+    if numeric is None:
+        return "__unknown__"
+    return f"{numeric:.6g}"
+
+
+def format_load_value(value: Any) -> str:
+    numeric = parse_float(value)
+    if numeric is None:
+        return "Unknown load"
+    return f"{numeric:g} kg"
+
+
+def get_motion_group_load_lookup(set_payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    load_lookup: dict[str, Any] = {}
+    for set_payload in set_payloads:
+        for motion_group in set_payload.get("motionGroups") or []:
+            motion_group_id = str(motion_group.get("id") or "")
+            if not motion_group_id:
+                continue
+            motions = motion_group.get("motions") or []
+            if not motions:
+                continue
+            resistance_values = motions[0].get("resistanceValues") or {}
+            load_lookup[motion_group_id] = resistance_values.get("concentricLoad")
+    return load_lookup
+
+
+def load_session_running_lr_set_payloads(
+    api_key: str,
+    session_id: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    session_detail, session_error = fetch_session_detail(api_key, session_id)
+    if session_error:
+        return [], [session_error]
+
+    set_payloads: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for exercise in (session_detail or {}).get("exercises") or []:
+        if str(exercise.get("exerciseTypeName") or "").strip() != "Running (LR)":
+            continue
+        for exercise_set in exercise.get("sets") or []:
+            set_id = str(exercise_set.get("id") or "")
+            if not set_id:
+                continue
+            set_payload, set_error = fetch_training_data_set(api_key, set_id, include_samples=False)
+            if set_error:
+                errors.append(set_error)
+                continue
+            if set_payload:
+                set_payloads.append(set_payload)
+    return set_payloads, errors
+
+
 def build_team_norm_row(items: list[dict[str, Any]], group_name: str) -> dict[str, Any]:
     f0_values = [float(item["report"]["f0"]) for item in items]
     v0_values = [float(item["report"]["v0"]) for item in items]
@@ -2898,6 +2953,128 @@ def build_team_scatter_entry(items: list[dict[str, Any]], category: str) -> dict
             for item in items
         ],
     }
+
+
+def select_best_team_fv_items_by_load(
+    candidates: list[dict[str, Any]],
+    selected_load_keys: list[str],
+) -> list[dict[str, Any]]:
+    selected = set(selected_load_keys)
+    best_by_client_load: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        load_key = str(candidate.get("load_key") or "")
+        if load_key not in selected:
+            continue
+        client_id = str(candidate.get("client_id") or "")
+        if not client_id:
+            continue
+        key = (client_id, load_key)
+        current = best_by_client_load.get(key)
+        if current is None or get_report_v0(candidate["report"]) > get_report_v0(current["report"]):
+            best_by_client_load[key] = candidate
+    return sorted(
+        best_by_client_load.values(),
+        key=lambda item: (item["player_name"].lower(), parse_float(item.get("load_key")) or float("inf")),
+    )
+
+
+def build_team_norm_rows_by_load(items: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    load_keys = sorted(
+        {str(item.get("load_key") or "__unknown__") for item in items},
+        key=lambda key: parse_float(key) if parse_float(key) is not None else float("inf"),
+    )
+    for load_key in load_keys:
+        load_items = [item for item in items if str(item.get("load_key") or "__unknown__") == load_key]
+        if not load_items:
+            continue
+        label = str(load_items[0].get("load_label") or "Unknown load")
+        f0_values = [float(item["report"]["f0"]) for item in load_items]
+        v0_values = [float(item["report"]["v0"]) for item in load_items]
+        rows[load_key] = {
+            "category": f"Team-relative: {label}",
+            "f0_min": min(f0_values),
+            "f0_max": max(f0_values),
+            "v0_min": min(v0_values),
+            "v0_max": max(v0_values),
+            "f0_median": statistics.median(f0_values),
+            "v0_median": statistics.median(v0_values),
+        }
+    return rows
+
+
+def group_items_by_player(items: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(str(item.get("client_id") or item.get("player_name") or ""), []).append(item)
+    return sorted(
+        grouped.items(),
+        key=lambda entry: str(entry[1][0].get("player_name") or "").lower(),
+    )
+
+
+def make_team_load_comparison_scatter(
+    items: list[dict[str, Any]],
+    norm_rows_by_load: dict[str, dict[str, Any]],
+) -> io.BytesIO:
+    markers = ["*", "o", "^", "s", "D", "P", "X"]
+    colors = ["#FB3331", "#3056A3", "#00A676", "#7A4FB3", "#F28C28", "#087E8B", "#B91C1C"]
+    load_keys = sorted(
+        norm_rows_by_load.keys(),
+        key=lambda key: parse_float(key) if parse_float(key) is not None else float("inf"),
+    )
+
+    fig, ax = plt.subplots(figsize=(8.4, 5.2))
+    all_x: list[float] = []
+    all_y: list[float] = []
+    for index, load_key in enumerate(load_keys):
+        load_items = [item for item in items if str(item.get("load_key") or "__unknown__") == load_key]
+        if not load_items:
+            continue
+        label = str(load_items[0].get("load_label") or "Unknown load")
+        x_values = [float(item["report"]["v0"]) for item in load_items]
+        y_values = [float(item["report"]["f0"]) for item in load_items]
+        all_x.extend(x_values)
+        all_y.extend(y_values)
+        color = colors[index % len(colors)]
+        marker = markers[index % len(markers)]
+        ax.scatter(
+            x_values,
+            y_values,
+            label=label,
+            marker=marker,
+            color=color,
+            s=95 if marker == "*" else 62,
+            alpha=0.88,
+            edgecolors="white" if marker != "*" else "none",
+            linewidths=0.6,
+        )
+        norm_row = norm_rows_by_load[load_key]
+        ax.axhline(float(norm_row["f0_median"]), color=color, linestyle="--", linewidth=1.1, alpha=0.65)
+        ax.axvline(float(norm_row["v0_median"]), color=color, linestyle=":", linewidth=1.1, alpha=0.65)
+
+    if all_x and all_y:
+        x_span = max(all_x) - min(all_x)
+        y_span = max(all_y) - min(all_y)
+        x_pad = max(x_span * 0.1, 0.15)
+        y_pad = max(y_span * 0.1, 0.15)
+        ax.set_xlim(min(all_x) - x_pad, max(all_x) + x_pad)
+        ax.set_ylim(min(all_y) - y_pad, max(all_y) + y_pad)
+
+    ax.set_xlabel("V0 [m/s]")
+    ax.set_ylabel("F0 [N/kg]")
+    ax.set_title("Team load comparison")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(True, linestyle="--", alpha=0.18)
+    ax.legend(loc="best", frameon=False)
+
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+    return buf
 
 
 def draw_team_fv_page(
@@ -3043,7 +3220,159 @@ def build_team_fv_pdf(
     return bytes(pdf.output(dest="S"))
 
 
-def collect_team_fv_items(
+def draw_load_compare_summary_page(
+    pdf: FPDF,
+    items: list[dict[str, Any]],
+    logo_bytes: bytes | None,
+    norm_rows_by_load: dict[str, dict[str, Any]],
+    group_name: str,
+    language: str,
+    font_family: str,
+) -> None:
+    chart_buf = make_team_load_comparison_scatter(items, norm_rows_by_load)
+    pdf.add_page()
+    left_x = 14
+    top_y = 18
+    logo_w = 32
+    if logo_bytes:
+        pdf.image(io.BytesIO(logo_bytes), x=pdf.w - logo_w - 12, y=14, w=logo_w)
+
+    pdf.set_text_color(*BLACK_RGB)
+    pdf.set_font(font_family, "", 24)
+    pdf.set_xy(left_x, top_y)
+    pdf.cell(0, 10, group_name, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_text_color(128, 128, 128)
+    pdf.set_font(font_family, "", 12)
+    pdf.set_xy(left_x, top_y + 12)
+    pdf.cell(0, 10, "Team-relative load comparison", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.image(chart_buf, x=18, y=46, w=176)
+
+    table_x = 204
+    table_y = 54
+    pdf.set_text_color(*BLACK_RGB)
+    pdf.set_font(font_family, "", 12)
+    pdf.text(table_x, table_y - 8, "Load medians")
+    pdf.set_font(font_family, "", 8)
+    y = table_y
+    for load_key in sorted(
+        norm_rows_by_load.keys(),
+        key=lambda key: parse_float(key) if parse_float(key) is not None else float("inf"),
+    ):
+        norm_row = norm_rows_by_load[load_key]
+        load_items = [item for item in items if str(item.get("load_key") or "__unknown__") == load_key]
+        label = str(load_items[0].get("load_label") or "Unknown load") if load_items else load_key
+        pdf.set_font(font_family, "", 9)
+        pdf.text(table_x, y, label)
+        pdf.set_font(font_family, "", 8)
+        pdf.text(table_x, y + 6, f"Players: {len(load_items)}")
+        pdf.text(table_x, y + 12, f"F0 med: {format_decimal(norm_row.get('f0_median'))}")
+        pdf.text(table_x, y + 18, f"V0 med: {format_decimal(norm_row.get('v0_median'))}")
+        y += 30
+
+    if RS_LOGO_PATH.is_file():
+        pdf.image(str(RS_LOGO_PATH), x=pdf.w - 46, y=pdf.h - 15, w=36)
+
+
+def draw_load_compare_player_page(
+    pdf: FPDF,
+    player_items: list[dict[str, Any]],
+    logo_bytes: bytes | None,
+    norm_rows_by_load: dict[str, dict[str, Any]],
+    language: str,
+    font_family: str,
+) -> None:
+    first_item = player_items[0]
+    player_name = str(first_item.get("player_name") or "-")
+    player_photo_bytes = first_item.get("player_photo_bytes")
+    pdf.add_page()
+
+    left_x = 14
+    top_y = 18
+    logo_w = 32
+    if logo_bytes:
+        pdf.image(io.BytesIO(logo_bytes), x=pdf.w - logo_w - 12, y=14, w=logo_w)
+
+    pdf.set_text_color(*BLACK_RGB)
+    pdf.set_font(font_family, "", 24)
+    pdf.set_xy(left_x, top_y)
+    pdf.cell(0, 10, player_name, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_text_color(128, 128, 128)
+    pdf.set_font(font_family, "", 12)
+    pdf.set_xy(left_x, top_y + 12)
+    pdf.cell(0, 10, "Team-relative load comparison", new_x="LMARGIN", new_y="NEXT")
+
+    if player_photo_bytes:
+        pdf.image(io.BytesIO(player_photo_bytes), x=232, y=42, w=42, h=42, keep_aspect_ratio=True)
+
+    headers = ["Load", "Quadrant", "F0", "V0", "PMax", "Session"]
+    col_widths = [28, 24, 22, 22, 24, 80]
+    table_x = left_x
+    table_y = 58
+    row_h = 11
+
+    pdf.set_fill_color(*BLUE_RGB)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font(font_family, "", 8)
+    x = table_x
+    for header, width in zip(headers, col_widths):
+        pdf.rect(x, table_y, width, row_h, style="F")
+        pdf.text(x + 2, table_y + 7, header)
+        x += width
+
+    pdf.set_text_color(*BLACK_RGB)
+    y = table_y + row_h
+    for item in sorted(
+        player_items,
+        key=lambda entry: parse_float(entry.get("load_key")) if parse_float(entry.get("load_key")) is not None else float("inf"),
+    ):
+        report = item["report"]
+        load_key = str(item.get("load_key") or "__unknown__")
+        norm_row = norm_rows_by_load[load_key]
+        quadrant = get_norm_quadrant(report, norm_row)
+        values = [
+            str(item.get("load_label") or "Unknown load"),
+            quadrant,
+            format_decimal(report.get("f0")),
+            format_decimal(report.get("v0")),
+            format_decimal(report.get("pMax")),
+            str(item.get("session_time") or "-"),
+        ]
+        x = table_x
+        pdf.set_font(font_family, "", 8)
+        for value, width in zip(values, col_widths):
+            pdf.rect(x, y, width, row_h)
+            pdf.text(x + 2, y + 7, value[:28])
+            x += width
+        y += row_h
+
+    pdf.set_font(font_family, "", 9)
+    pdf.set_text_color(128, 128, 128)
+    pdf.text(left_x, y + 12, "Each load is compared against the team's median for that same load.")
+
+    if RS_LOGO_PATH.is_file():
+        pdf.image(str(RS_LOGO_PATH), x=pdf.w - 46, y=pdf.h - 15, w=36)
+
+
+def build_team_load_compare_pdf(
+    items: list[dict[str, Any]],
+    logo_bytes: bytes | None,
+    norm_rows_by_load: dict[str, dict[str, Any]],
+    group_name: str,
+    language: str,
+) -> bytes:
+    pdf = FPDF("L", "mm", "A4")
+    pdf.set_auto_page_break(auto=False)
+    font_family = configure_pdf_font(pdf)
+    draw_load_compare_summary_page(pdf, items, logo_bytes, norm_rows_by_load, group_name, language, font_family)
+    for _, player_items in group_items_by_player(items):
+        draw_load_compare_player_page(pdf, player_items, logo_bytes, norm_rows_by_load, language, font_family)
+    return bytes(pdf.output(dest="S"))
+
+
+def collect_team_fv_candidates(
     api_key: str,
     clients: list[dict[str, Any]],
     group_name: str,
@@ -3063,7 +3392,7 @@ def collect_team_fv_items(
     if sessions_error:
         return [], [], sessions_error
 
-    best_by_client: dict[str, dict[str, Any]] = {}
+    candidates: list[dict[str, Any]] = []
     warnings: list[str] = []
     group_sessions = [
         session
@@ -3083,6 +3412,13 @@ def collect_team_fv_items(
         if not fv_payload:
             continue
 
+        set_payloads, set_errors = load_session_running_lr_set_payloads(api_key, session_id)
+        warnings.extend(
+            f"{format_session_timestamp(session.get('timestamp'))}: {set_error}"
+            for set_error in set_errors
+        )
+        load_lookup = get_motion_group_load_lookup(set_payloads)
+
         for report in fv_payload.get("reports") or []:
             runner_info = report.get("runnerInfo") or {}
             client_id = str(runner_info.get("clientId") or session.get("clientId") or "")
@@ -3097,6 +3433,8 @@ def collect_team_fv_items(
                 if format_optional_value(runner_info.get("displayName")) != "-"
                 else format_optional_value(client.get("displayName"))
             )
+            motion_group_id = str(report.get("motionGroupId") or "")
+            load_value = load_lookup.get(motion_group_id)
             candidate = {
                 "client_id": client_id,
                 "player_name": player_name,
@@ -3104,15 +3442,48 @@ def collect_team_fv_items(
                 "session": session,
                 "session_time": format_session_timestamp(session.get("timestamp")),
                 "report": report,
+                "load": load_value,
+                "load_key": normalize_load_key(load_value),
+                "load_label": format_load_value(load_value),
                 "player_photo_bytes": load_player_photo_bytes(client_id),
             }
+            candidates.append(candidate)
 
-            current = best_by_client.get(client_id)
-            if current is None or get_report_v0(report) > get_report_v0(current["report"]):
-                best_by_client[client_id] = candidate
+    candidates = sorted(candidates, key=lambda item: (item["player_name"].lower(), item["session_time"]))
+    return candidates, warnings, None
 
+
+def select_best_team_fv_items(
+    candidates: list[dict[str, Any]],
+    load_filter: str,
+    selected_load_key: str,
+) -> list[dict[str, Any]]:
+    filtered_candidates = [
+        candidate
+        for candidate in candidates
+        if load_filter == "All loads" or candidate.get("load_key") == selected_load_key
+    ]
+    best_by_client: dict[str, dict[str, Any]] = {}
+    for candidate in filtered_candidates:
+        client_id = str(candidate.get("client_id") or "")
+        if not client_id:
+            continue
+        current = best_by_client.get(client_id)
+        if current is None or get_report_v0(candidate["report"]) > get_report_v0(current["report"]):
+            best_by_client[client_id] = candidate
     items = sorted(best_by_client.values(), key=lambda item: item["player_name"].lower())
-    return items, warnings, None
+    return items
+
+
+def get_team_fv_load_options(candidates: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    option_lookup: dict[str, str] = {}
+    for candidate in candidates:
+        load_key = str(candidate.get("load_key") or "__unknown__")
+        option_lookup.setdefault(load_key, str(candidate.get("load_label") or "Unknown load"))
+    return sorted(
+        option_lookup.items(),
+        key=lambda item: (item[0] == "__unknown__", parse_float(item[0]) if parse_float(item[0]) is not None else float("inf")),
+    )
 
 
 def load_exercise_report(
@@ -3622,6 +3993,72 @@ def render_team_fv_export(clients: list[dict[str, Any]], api_key: str) -> None:
         key="team_fv_selection_rule",
     )
 
+    load_filter_options = ["All loads", "Specific load"]
+    if export_mode == "Team-relative":
+        load_filter_options.append("Compare loads")
+    if st.session_state.get("team_fv_load_filter") not in load_filter_options:
+        st.session_state["team_fv_load_filter"] = "All loads"
+
+    load_col1, load_col2 = st.columns([1, 1])
+    load_filter = load_col1.radio(
+        "Load filter",
+        options=load_filter_options,
+        horizontal=True,
+        key="team_fv_load_filter",
+    )
+    candidates_cache_key = (
+        f"{selected_group}|{from_date.isoformat()}|{to_date.isoformat()}"
+    )
+    cached_candidates_key = st.session_state.get("team_fv_candidates_key", "")
+    cached_candidates = (
+        st.session_state.get("team_fv_candidates", [])
+        if cached_candidates_key == candidates_cache_key
+        else []
+    )
+    selected_load_key = ""
+    selected_compare_load_keys: list[str] = []
+    if load_filter in {"Specific load", "Compare loads"}:
+        if load_col2.button("Find available loads", key="team_fv_find_loads", width="stretch"):
+            with st.spinner("Finding available loads..."):
+                candidates, warnings, error = collect_team_fv_candidates(
+                    api_key,
+                    clients,
+                    selected_group,
+                    from_date,
+                    to_date,
+                )
+            st.session_state["team_fv_candidates_key"] = candidates_cache_key
+            st.session_state["team_fv_candidates"] = candidates
+            st.session_state["team_fv_candidate_warnings"] = warnings
+            st.session_state["team_fv_candidates_error"] = error or ""
+            cached_candidates = candidates
+
+        cached_error = st.session_state.get("team_fv_candidates_error", "")
+        if cached_error and cached_candidates_key == candidates_cache_key:
+            st.error(cached_error)
+
+        load_options = get_team_fv_load_options(cached_candidates)
+        if load_options:
+            load_option_lookup = {label: key for key, label in load_options}
+            if load_filter == "Specific load":
+                selected_load_label = load_col2.selectbox(
+                    "Specific load",
+                    options=list(load_option_lookup.keys()),
+                    key="team_fv_specific_load",
+                )
+                selected_load_key = load_option_lookup[selected_load_label]
+            else:
+                default_labels = list(load_option_lookup.keys())[:2]
+                selected_load_labels = load_col2.multiselect(
+                    "Loads to compare",
+                    options=list(load_option_lookup.keys()),
+                    default=default_labels,
+                    key="team_fv_compare_loads",
+                )
+                selected_compare_load_keys = [load_option_lookup[label] for label in selected_load_labels]
+        else:
+            load_col2.caption("Find available loads to continue.")
+
     settings_col1, settings_col2 = st.columns([1, 1])
     export_language = settings_col1.selectbox(
         "Language",
@@ -3660,14 +4097,26 @@ def render_team_fv_export(clients: list[dict[str, Any]], api_key: str) -> None:
         return
 
     if st.button("Prepare team FV export", key="team_fv_prepare", width="stretch"):
-        with st.spinner("Collecting team FV reports..."):
-            items, warnings, error = collect_team_fv_items(
-                api_key,
-                clients,
-                selected_group,
-                from_date,
-                to_date,
-            )
+        if load_filter == "Specific load" and not selected_load_key:
+            st.warning("Find and select a specific load before preparing the export.")
+            return
+        if load_filter == "Compare loads" and len(selected_compare_load_keys) < 2:
+            st.warning("Find and select at least two loads to compare.")
+            return
+
+        if load_filter in {"Specific load", "Compare loads"} and cached_candidates:
+            candidates = cached_candidates
+            warnings = st.session_state.get("team_fv_candidate_warnings", [])
+            error = st.session_state.get("team_fv_candidates_error", "") or None
+        else:
+            with st.spinner("Collecting team FV reports..."):
+                candidates, warnings, error = collect_team_fv_candidates(
+                    api_key,
+                    clients,
+                    selected_group,
+                    from_date,
+                    to_date,
+                )
 
         if error:
             st.error(error)
@@ -3676,8 +4125,66 @@ def render_team_fv_export(clients: list[dict[str, Any]], api_key: str) -> None:
             with st.expander("Team FV collection warnings"):
                 for warning in warnings:
                     st.write(warning)
+
+        if load_filter == "Compare loads":
+            items = select_best_team_fv_items_by_load(candidates, selected_compare_load_keys)
+        else:
+            items = select_best_team_fv_items(candidates, load_filter, selected_load_key)
         if not items:
             st.info("No valid Running (LR) FV reports were found for this group and date range.")
+            return
+
+        if load_filter == "Compare loads":
+            norm_rows_by_load = build_team_norm_rows_by_load(items)
+            if len(norm_rows_by_load) < 2:
+                st.warning("At least two selected loads need valid FV reports.")
+                return
+            preview_rows = []
+            for item in items:
+                report = item["report"]
+                load_key = str(item.get("load_key") or "__unknown__")
+                quadrant = get_norm_quadrant(report, norm_rows_by_load[load_key])
+                preview_rows.append(
+                    {
+                        "Player": item["player_name"],
+                        "Group": item["group"],
+                        "Load": item.get("load_label") or "Unknown load",
+                        "Session": item["session_time"],
+                        "F0": format_decimal(report.get("f0")),
+                        "V0": format_decimal(report.get("v0")),
+                        "PMax": format_decimal(report.get("pMax")),
+                        "Confidence": format_decimal(report.get("confidence"), 3),
+                        "Quadrant": quadrant,
+                    }
+                )
+
+            st.dataframe(preview_rows, width="stretch", hide_index=True)
+            pdf_bytes = build_team_load_compare_pdf(
+                items,
+                logo_bytes,
+                norm_rows_by_load,
+                selected_group,
+                export_language,
+            )
+            compared_loads = "_".join(
+                safe_filename(str(label or "load"))
+                for label in sorted(
+                    {item.get("load_label") for item in items},
+                    key=lambda label: parse_float(str(label).replace(" kg", "")) if label else float("inf"),
+                )
+            )
+            file_name = (
+                f"{safe_filename(selected_group)}_load_compare_{compared_loads}_"
+                f"{from_date.isoformat()}_{to_date.isoformat()}_fv_team.pdf"
+            )
+            st.download_button(
+                "Download team FV PDF",
+                data=pdf_bytes,
+                file_name=file_name,
+                mime="application/pdf",
+                key="team_fv_download",
+                width="stretch",
+            )
             return
 
         if export_mode == "Team-relative":
@@ -3704,6 +4211,13 @@ def render_team_fv_export(clients: list[dict[str, Any]], api_key: str) -> None:
             subtitle = f"Reference norm FV profile | {selected_norm_category}"
             file_mode = f"reference_{safe_filename(selected_norm_category)}"
 
+        if load_filter == "Specific load":
+            selected_load_label = str(items[0].get("load_label") or "Unknown load")
+            subtitle = f"{subtitle} | {selected_load_label}"
+            file_mode = f"{file_mode}_{safe_filename(selected_load_label)}"
+        else:
+            subtitle = f"{subtitle} | All loads"
+
         preview_rows = []
         for item in items:
             report = item["report"]
@@ -3716,6 +4230,7 @@ def render_team_fv_export(clients: list[dict[str, Any]], api_key: str) -> None:
                     "F0": format_decimal(report.get("f0")),
                     "V0": format_decimal(report.get("v0")),
                     "PMax": format_decimal(report.get("pMax")),
+                    "Load": item.get("load_label") or "Unknown load",
                     "Confidence": format_decimal(report.get("confidence"), 3),
                     "Quadrant": quadrant,
                 }
