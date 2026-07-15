@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import hashlib
 import base64
+import html
 import io
 import json
 import os
@@ -1958,6 +1959,13 @@ def get_client_display_name(client_id: Any, client_lookup: dict[str, dict[str, A
     return format_optional_value(client.get("displayName"))
 
 
+def get_client_group(client_id: Any, client_lookup: dict[str, dict[str, Any]]) -> str:
+    client = client_lookup.get(str(client_id or ""))
+    if not client:
+        return "-"
+    return format_optional_value(client.get("group"))
+
+
 def has_missing_client_names(sessions: list[dict[str, Any]], client_lookup: dict[str, dict[str, Any]]) -> bool:
     for session in sessions:
         client_id = str(session.get("clientId") or "")
@@ -3403,6 +3411,11 @@ def render_session_selection_block(
         session_id = str(session.get("id") or "")
         session_time = format_session_timestamp(session.get("timestamp"))
         athlete_name = get_client_display_name(session.get("clientId"), client_lookup)
+        group_name = get_client_group(session.get("clientId"), client_lookup)
+        subtitle_parts = [athlete_name]
+        if group_name != "-":
+            subtitle_parts.append(group_name)
+        session_subtitle = " · ".join(subtitle_parts)
         is_selected = session_id == selected_session_id
 
         with st.container(border=True):
@@ -3411,8 +3424,8 @@ def render_session_selection_block(
                 st.markdown(
                     f"""
                     <div class="session-row-inline">
-                      <p class="session-row-title">{session_time}</p>
-                      <p class="session-row-subtitle">{athlete_name}</p>
+                      <p class="session-row-title">{html.escape(session_time)}</p>
+                      <p class="session-row-subtitle">{html.escape(session_subtitle)}</p>
                     </div>
                     """,
                     unsafe_allow_html=True,
