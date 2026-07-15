@@ -7,6 +7,7 @@ import html
 import io
 import json
 import os
+import statistics
 import struct
 import sys
 import unicodedata
@@ -634,6 +635,32 @@ def fetch_force_velocity_exercise(
         return None, "The API key is no longer authorized to load FV profile data."
 
     return None, f"1080 API returned an unexpected response while loading FV profile: {response.status_code}"
+
+
+def fetch_force_velocity_session(
+    api_key: str, session_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/ForceVelocity/Session/{session_id}",
+            headers=build_headers(api_key),
+            timeout=API_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        return None, f"Communication error while loading session FV profile: {exc}"
+
+    if response.status_code == 200:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return payload, None
+        return None, "The session FV response did not return the expected object format."
+
+    if response.status_code in (400, 404):
+        return None, None
+    if response.status_code in (401, 403):
+        return None, "The API key is no longer authorized to load session FV profile data."
+
+    return None, f"1080 API returned an unexpected response while loading session FV profile: {response.status_code}"
 
 
 def fetch_split_exercise(
@@ -2833,6 +2860,261 @@ def build_normative_fv_pdf(
     return bytes(pdf.output(dest="S"))
 
 
+def parse_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_report_v0(report: dict[str, Any]) -> float:
+    return parse_float(report.get("v0")) or float("-inf")
+
+
+def build_team_norm_row(items: list[dict[str, Any]], group_name: str) -> dict[str, Any]:
+    f0_values = [float(item["report"]["f0"]) for item in items]
+    v0_values = [float(item["report"]["v0"]) for item in items]
+    return {
+        "category": f"Team-relative: {group_name}",
+        "f0_min": min(f0_values),
+        "f0_max": max(f0_values),
+        "v0_min": min(v0_values),
+        "v0_max": max(v0_values),
+        "f0_median": statistics.median(f0_values),
+        "v0_median": statistics.median(v0_values),
+    }
+
+
+def build_team_scatter_entry(items: list[dict[str, Any]], category: str) -> dict[str, Any]:
+    return {
+        "category": category,
+        "points": [
+            {
+                "f0": float(item["report"]["f0"]),
+                "v0": float(item["report"]["v0"]),
+            }
+            for item in items
+        ],
+    }
+
+
+def draw_team_fv_page(
+    pdf: FPDF,
+    item: dict[str, Any],
+    logo_bytes: bytes | None,
+    norm_row: dict[str, Any],
+    scatter_entry: dict[str, Any] | None,
+    language: str,
+    subtitle: str,
+    font_family: str,
+) -> None:
+    report = item["report"]
+    player_name = item["player_name"]
+    player_photo_bytes = item.get("player_photo_bytes")
+    texts = PDF_TEXT[language]
+    fv_buf = make_normative_fv_profile(report, norm_row, language)
+    scatter_buf = (
+        make_norm_scatter_plot(report, norm_row, scatter_entry, language)
+        if scatter_entry
+        else None
+    )
+
+    pdf.add_page()
+
+    left_x = 14
+    left_w = 126
+    right_x = 154
+    right_w = 129
+    logo_w = 32
+    top_y = 18
+    subtitle_y = 29
+    badge_y = 39
+    header_bottom_y = badge_y + 11
+    logo_x = pdf.w - logo_w - 12
+    logo_y = top_y + ((header_bottom_y - top_y) - logo_w) / 2
+    fv_chart_y = 56
+    fv_chart_w = left_w
+    metrics_y = 148
+    rec_title_y = 154
+    rec_text_y = 161
+    photo_w = 46
+    photo_x = right_x + (right_w - photo_w) / 2
+    photo_y = 14
+    scatter_y = 66
+    scatter_w = 96
+    scatter_x = right_x + (right_w - scatter_w) / 2
+    rs_logo_w = 36
+    rs_logo_x = pdf.w - rs_logo_w - 10
+    rs_logo_y = pdf.h - 15
+
+    if logo_bytes:
+        pdf.image(io.BytesIO(logo_bytes), x=logo_x, y=logo_y, w=logo_w)
+
+    pdf.set_text_color(*BLACK_RGB)
+    pdf.set_font(font_family, "", 24)
+    pdf.set_xy(left_x, top_y)
+    pdf.cell(0, 10, player_name, new_x="LMARGIN", new_y="NEXT")
+
+    pdf.set_text_color(128, 128, 128)
+    pdf.set_font(font_family, "", 12)
+    pdf.set_xy(left_x, subtitle_y)
+    pdf.cell(0, 10, subtitle, new_x="LMARGIN", new_y="NEXT")
+
+    quadrant = get_norm_quadrant(report, norm_row)
+    quadrant_result = get_quadrant_result(quadrant, language)
+    recommendations = get_quadrant_recommendations(quadrant, language)
+
+    pdf.set_font(font_family, "", 12)
+    pdf.set_fill_color(*get_quadrant_badge_fill(quadrant))
+    pdf.set_text_color(255, 255, 255)
+    rounded_corner_cell(pdf, left_x, badge_y, 14, 11, quadrant)
+
+    pdf.set_fill_color(*get_quadrant_result_fill(quadrant))
+    rounded_corner_cell(pdf, left_x + 16, badge_y, min(100, left_w - 16), 11, quadrant_result)
+
+    pdf.image(fv_buf, x=left_x, y=fv_chart_y, w=fv_chart_w)
+    if player_photo_bytes:
+        pdf.image(io.BytesIO(player_photo_bytes), x=photo_x, y=photo_y, w=photo_w, h=photo_w, keep_aspect_ratio=True)
+    if scatter_buf:
+        pdf.image(scatter_buf, x=scatter_x, y=scatter_y, w=scatter_w)
+
+    f0 = float(report["f0"])
+    v0 = float(report["v0"])
+    pmax = float(report["pMax"])
+    drf = float(report.get("ratioOfForceDecrease") or 0)
+    rfmax = float(report.get("ratioOfForceMax") or 0)
+
+    metrics_block_w = 74
+    data_x = left_x + (left_w - metrics_block_w) / 2
+    data_y = metrics_y
+    y_second_row = 18
+    cell_w = 22
+    cell_h = 12
+    cell_h_sub = 7
+
+    pdf.set_fill_color(*BLUE_RGB)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font(font_family, "", 12)
+
+    rounded_corner_cell(pdf, data_x, data_y, cell_w, cell_h, str(round(f0, 2)))
+    rounded_corner_cell(pdf, data_x + 26, data_y, cell_w, cell_h, str(round(v0, 2)))
+    rounded_corner_cell(pdf, data_x + 52, data_y, cell_w, cell_h, str(round(pmax, 2)))
+    rounded_corner_cell(pdf, data_x, data_y + y_second_row, cell_w, cell_h, str(round(v0 * 3.6, 2)))
+    rounded_corner_cell(pdf, data_x + 26, data_y + y_second_row, cell_w, cell_h, str(round(drf, 2)))
+    rounded_corner_cell(pdf, data_x + 52, data_y + y_second_row, cell_w, cell_h, str(round(rfmax, 2)))
+
+    pdf.set_font(font_family, "", 8)
+    pdf.set_text_color(220, 220, 220)
+    rounded_corner_cell(pdf, data_x, data_y + 9, cell_w, cell_h_sub, "F0 [N/kg]")
+    rounded_corner_cell(pdf, data_x + 26, data_y + 9, cell_w, cell_h_sub, "V0 [m/s]")
+    rounded_corner_cell(pdf, data_x + 52, data_y + 9, cell_w, cell_h_sub, "PMax [W]")
+    rounded_corner_cell(pdf, data_x, data_y + 9 + y_second_row, cell_w, cell_h_sub, "V0 [km/h]")
+    rounded_corner_cell(pdf, data_x + 26, data_y + 9 + y_second_row, cell_w, cell_h_sub, "DRF")
+    rounded_corner_cell(pdf, data_x + 52, data_y + 9 + y_second_row, cell_w, cell_h_sub, "RFmax")
+
+    pdf.set_font(font_family, "", 14)
+    pdf.set_text_color(*BLACK_RGB)
+    pdf.text(right_x, rec_title_y, texts["recommendation"])
+    pdf.set_font(font_family, "", 8)
+    y_coordinate = rec_text_y
+    for rec_item in recommendations:
+        pdf.text(right_x, y_coordinate, "* " + rec_item)
+        y_coordinate += 7
+
+    if RS_LOGO_PATH.is_file():
+        pdf.image(str(RS_LOGO_PATH), x=rs_logo_x, y=rs_logo_y, w=rs_logo_w)
+
+
+def build_team_fv_pdf(
+    items: list[dict[str, Any]],
+    logo_bytes: bytes | None,
+    norm_row: dict[str, Any],
+    scatter_entry: dict[str, Any] | None,
+    language: str,
+    subtitle: str,
+) -> bytes:
+    pdf = FPDF("L", "mm", "A4")
+    pdf.set_auto_page_break(auto=False)
+    font_family = configure_pdf_font(pdf)
+    for item in items:
+        draw_team_fv_page(pdf, item, logo_bytes, norm_row, scatter_entry, language, subtitle, font_family)
+    return bytes(pdf.output(dest="S"))
+
+
+def collect_team_fv_items(
+    api_key: str,
+    clients: list[dict[str, Any]],
+    group_name: str,
+    from_date: date,
+    to_date: date,
+) -> tuple[list[dict[str, Any]], list[str], str | None]:
+    client_lookup = get_client_lookup(clients)
+    group_client_ids = {
+        str(client.get("id") or "")
+        for client in clients
+        if str(client.get("group") or "").strip() == group_name
+    }
+    if not group_client_ids:
+        return [], [], "No athletes were found for the selected group."
+
+    sessions, sessions_error = fetch_recent_sessions(api_key, from_date, to_date)
+    if sessions_error:
+        return [], [], sessions_error
+
+    best_by_client: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    group_sessions = [
+        session
+        for session in (sessions or [])
+        if str(session.get("clientId") or "") in group_client_ids
+    ]
+
+    for session in group_sessions:
+        session_id = str(session.get("id") or "")
+        if not session_id:
+            continue
+
+        fv_payload, fv_error = fetch_force_velocity_session(api_key, session_id)
+        if fv_error:
+            warnings.append(f"{format_session_timestamp(session.get('timestamp'))}: {fv_error}")
+            continue
+        if not fv_payload:
+            continue
+
+        for report in fv_payload.get("reports") or []:
+            runner_info = report.get("runnerInfo") or {}
+            client_id = str(runner_info.get("clientId") or session.get("clientId") or "")
+            if client_id not in group_client_ids:
+                continue
+            if any(parse_float(report.get(key)) is None for key in ("f0", "v0", "pMax")):
+                continue
+
+            client = client_lookup.get(client_id, {})
+            player_name = (
+                format_optional_value(runner_info.get("displayName"))
+                if format_optional_value(runner_info.get("displayName")) != "-"
+                else format_optional_value(client.get("displayName"))
+            )
+            candidate = {
+                "client_id": client_id,
+                "player_name": player_name,
+                "group": group_name,
+                "session": session,
+                "session_time": format_session_timestamp(session.get("timestamp")),
+                "report": report,
+                "player_photo_bytes": load_player_photo_bytes(client_id),
+            }
+
+            current = best_by_client.get(client_id)
+            if current is None or get_report_v0(report) > get_report_v0(current["report"]):
+                best_by_client[client_id] = candidate
+
+    items = sorted(best_by_client.values(), key=lambda item: item["player_name"].lower())
+    return items, warnings, None
+
+
 def load_exercise_report(
     api_key: str,
     exercise_id: str,
@@ -3296,6 +3578,173 @@ def render_deceleration_debug(
         st.code(json.dumps(sanitize_for_debug(debug_info), ensure_ascii=False, indent=2), language="json")
 
 
+def render_team_fv_export(clients: list[dict[str, Any]], api_key: str) -> None:
+    group_options = sorted(
+        {
+            str(client.get("group")).strip()
+            for client in clients
+            if client.get("group") not in (None, "")
+        }
+    )
+    if not group_options:
+        return
+
+    st.markdown("### Team FV export")
+    st.caption("Create a multi-page Running (LR) FV PDF for a selected group.")
+
+    top_col1, top_col2 = st.columns([1, 1])
+    selected_group = top_col1.selectbox(
+        "Group",
+        options=group_options,
+        key="team_fv_group",
+    )
+    export_mode = top_col2.radio(
+        "Comparison",
+        options=["Team-relative", "Reference norm"],
+        horizontal=True,
+        key="team_fv_mode",
+    )
+
+    date_col1, date_col2, rule_col = st.columns([1, 1, 1])
+    from_date = date_col1.date_input(
+        "From",
+        value=date.today() - timedelta(days=7),
+        key="team_fv_from",
+    )
+    to_date = date_col2.date_input(
+        "To",
+        value=date.today(),
+        key="team_fv_to",
+    )
+    rule_col.selectbox(
+        "Run selection",
+        options=["Highest V0"],
+        key="team_fv_selection_rule",
+    )
+
+    settings_col1, settings_col2 = st.columns([1, 1])
+    export_language = settings_col1.selectbox(
+        "Language",
+        options=["English", "Slovak"],
+        key="team_fv_language",
+    )
+
+    selected_norm = None
+    selected_norm_category = ""
+    scatter_entry = None
+    if export_mode == "Reference norm":
+        norms, norms_error = load_fv_norms()
+        scatter_map, scatter_error = load_fv_norm_scatter()
+        if norms_error:
+            st.error(norms_error)
+            return
+        if scatter_error:
+            st.warning(scatter_error)
+            scatter_map = {}
+
+        norm_options = {str(item.get("category")): item for item in norms}
+        selected_norm_category = settings_col2.selectbox(
+            "Reference category",
+            options=list(norm_options.keys()),
+            key="team_fv_norm_category",
+        )
+        selected_norm = norm_options[selected_norm_category]
+        scatter_entry = scatter_map.get(selected_norm_category)
+    else:
+        settings_col2.caption("Uses the selected team's own F0 and V0 medians.")
+
+    logo_bytes = render_logo_library_selector("team_fv_logo", export_language)
+
+    if from_date > to_date:
+        st.warning("The start date must be before or equal to the end date.")
+        return
+
+    if st.button("Prepare team FV export", key="team_fv_prepare", width="stretch"):
+        with st.spinner("Collecting team FV reports..."):
+            items, warnings, error = collect_team_fv_items(
+                api_key,
+                clients,
+                selected_group,
+                from_date,
+                to_date,
+            )
+
+        if error:
+            st.error(error)
+            return
+        if warnings:
+            with st.expander("Team FV collection warnings"):
+                for warning in warnings:
+                    st.write(warning)
+        if not items:
+            st.info("No valid Running (LR) FV reports were found for this group and date range.")
+            return
+
+        if export_mode == "Team-relative":
+            norm_row = build_team_norm_row(items, selected_group)
+            scatter_entry = build_team_scatter_entry(items, str(norm_row.get("category") or selected_group))
+            subtitle = "Team-relative FV profile"
+            file_mode = "team_relative"
+        else:
+            if selected_norm is None:
+                st.warning("Select a reference category before exporting.")
+                return
+            missing_values = [
+                key
+                for key in ("f0_min", "f0_max", "v0_min", "v0_max", "f0_median", "v0_median")
+                if selected_norm.get(key) in (None, "")
+            ]
+            if missing_values:
+                st.warning(
+                    "Selected norm category is missing values in the workbook: "
+                    + ", ".join(missing_values)
+                )
+                return
+            norm_row = selected_norm
+            subtitle = f"Reference norm FV profile | {selected_norm_category}"
+            file_mode = f"reference_{safe_filename(selected_norm_category)}"
+
+        preview_rows = []
+        for item in items:
+            report = item["report"]
+            quadrant = get_norm_quadrant(report, norm_row)
+            preview_rows.append(
+                {
+                    "Player": item["player_name"],
+                    "Group": item["group"],
+                    "Session": item["session_time"],
+                    "F0": format_decimal(report.get("f0")),
+                    "V0": format_decimal(report.get("v0")),
+                    "PMax": format_decimal(report.get("pMax")),
+                    "Confidence": format_decimal(report.get("confidence"), 3),
+                    "Quadrant": quadrant,
+                }
+            )
+
+        st.dataframe(preview_rows, width="stretch", hide_index=True)
+
+        pdf_bytes = build_team_fv_pdf(
+            items,
+            logo_bytes,
+            norm_row,
+            scatter_entry,
+            export_language,
+            subtitle,
+        )
+        file_name = (
+            f"{safe_filename(selected_group)}_{file_mode}_"
+            f"{from_date.isoformat()}_{to_date.isoformat()}_fv_team.pdf"
+        )
+        st.download_button(
+            "Download team FV PDF",
+            data=pdf_bytes,
+            file_name=file_name,
+            mime="application/pdf",
+            key="team_fv_download",
+            width="stretch",
+        )
+
+
 def render_session_detail_content(
     session_detail: dict[str, Any],
     client_lookup: dict[str, dict[str, Any]],
@@ -3618,6 +4067,10 @@ def render_dashboard() -> None:
     overview_tab, athletes_tab = st.tabs(["Recent sessions", "Athletes"])
 
     with overview_tab:
+        clients = st.session_state.get("clients_cache", [])
+        if clients:
+            render_team_fv_export(clients, api_key)
+
         st.markdown("### Recent sessions")
         st.caption("A quick view of the latest activity from the last 7 days.")
         recent_from = date.today() - timedelta(days=7)
